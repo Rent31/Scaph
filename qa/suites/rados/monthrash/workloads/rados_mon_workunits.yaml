@@ -1,0 +1,18 @@
+overrides:
+  ceph:
+    log-ignorelist:
+    - but it is still running
+    - overall HEALTH_
+    - \(PG_
+    - \(MON_DOWN\)
+    - \(AUTH_BAD_CAPS\)
+    - AUTH_INSECURE_CLIENT_KEY_TYPE
+tasks:
+- workunit:
+    clients:
+      client.0:
+        - mon/pool_ops.sh
+        - mon/crush_ops.sh
+        - mon/osd.sh
+        - mon/caps.sh
+
