@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scaph billing</title>
+<link rel="stylesheet" href="../shared/style.css">
+</head>
+<body>
+<div class="layout">
+  <div class="sidebar">
+    <div class="brand">
+      <div class="mark"></div>
+      <span>Scaph billing</span>
+    </div>
+    <div class="nav">
+      <div class="section-title">account</div>
+      <a href="#" data-page="overview" class="nav-item active">Overview</a>
+      <a href="#" data-page="usage" class="nav-item">Usage</a>
+      <a href="#" data-page="invoices" class="nav-item">Invoices</a>
+      <a href="#" data-page="keys" class="nav-item">Access keys</a>
+      <a href="#" data-page="buckets" class="nav-item">Buckets</a>
+    </div>
+  </div>
+  <div class="main">
+    <div id="page-overview" class="page active">
+      <div class="header">
+        <h2>Account overview</h2>
+        <p id="account-line">Loading account&hellip;</p>
+      </div>
+      <div class="kv" id="overview-kv"></div>
+      <div class="card">
+        <h3>Recent activity</h3>
+        <p class="empty">No recent activity.</p>
+      </div>
+    </div>
+
+    <div id="page-usage" class="page">
+      <div class="header">
+        <h2>Usage metering</h2>
+        <p>Storage GB-hours, requests, and egress exported to billing.</p>
+      </div>
+      <div class="kv" id="usage-kv"></div>
+      <div class="card">
+        <h3>Pricing</h3>
+        <table id="pricing-table">
+          <thead><tr><th>Meter</th><th>Standard</th><th>Infrequent Access</th><th>Archive</th></tr></thead>
+          <tbody>
+            <tr><td>Storage (per GB-month)</td><td>$0.023</td><td>$0.0125</td><td>$0.004</td></tr>
+            <tr><td>Requests (per 1,000)</td><td>$0.005</td><td>$0.005</td><td>$0.005</td></tr>
+            <tr><td>Data retrieval (per GB)</td><td>$0.00</td><td>$0.01</td><td>$0.025</td></tr>
+            <tr><td>Egress (per GB)</td><td>$0.09</td><td>$0.09</td><td>$0.09</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="page-invoices" class="page">
+      <div class="header">
+        <h2>Invoices</h2>
+        <p>Storage GB-hours, requests, and egress per billing period.</p>
+      </div>
+      <table id="invoices-table">
+        <thead><tr><th>Invoice</th><th>Period</th><th>Storage (GB-hours)</th><th>Requests</th><th>Egress (GB)</th><th>Amount</th><th>State</th><th>Due</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-keys" class="page">
+      <div class="header">
+        <h2>Access keys</h2>
+        <p>Multiple keys per tenant with rotation support.</p>
+      </div>
+      <table id="keys-table">
+        <thead><tr><th>Access key</th><th>Created</th><th>State</th><th>Action</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px">
+        <h3>Rotate key</h3>
+        <form class="form" id="key-form">
+          <div>
+            <label for="key-user">User email</label>
+            <input id="key-user" type="email" required>
+          </div>
+          <div class="actions">
+            <button type="submit">Create new key</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-buckets" class="page">
+      <div class="header">
+        <h2>Buckets</h2>
+        <p>Your buckets and storage classes.</p>
+      </div>
+      <table id="buckets-table">
+        <thead><tr><th>Name</th><th>Storage class</th><th>Size (GB)</th><th>Objects</th><th>Versioning</th><th>Object lock</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = "/api";
+const toast = document.getElementById("toast");
+
+function showToast(message) {
+  toast.textContent = message;
+  toast.style.display = "block";
+  setTimeout(() => { toast.style.display = "none"; }, 4000);
+}
+
+async function fetchJSON(path) {
+  const res = await fetch(API + path, {
+    headers: { "X-Tenant": "tenant-a" },
+  });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+function render(tableId, rows, columns) {
+  const tbody = document.querySelector("#" + tableId + " tbody");
+  tbody.innerHTML = "";
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    columns.forEach((col) => {
+      const td = document.createElement("td");
+      const val = row[col];
+      td.textContent = val === undefined || val === null ? "-" : val;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+function showPage(id) {
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+  document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+  document.getElementById("page-" + id).classList.add("active");
+  document.querySelector('[data-page="' + id + '"]').classList.add("active");
+}
+
+document.querySelectorAll(".nav-item").forEach(item => {
+  item.addEventListener("click", (e) => {
+    e.preventDefault();
+    showPage(item.getAttribute("data-page"));
+  });
+});
+
+async function loadOverview() {
+  const me = await fetchJSON("/me");
+  setText("account-line", me.user + " - tenant " + me.tenant);
+  const usage = await fetchJSON("/usage");
+  const u = usage["tenant-a"] || usage[Object.keys(usage)[0]];
+  document.getElementById("overview-kv").innerHTML =
+    '<div class="kv-item"><div class="label">Storage</div><div class="value">' +
+    (u.storage_gb_hours / 730).toFixed(0) + ' GB</div></div>' +
+    '<div class="kv-item"><div class="label">Requests</div><div class="value">' +
+    u.requests.toLocaleString() + '</div></div>' +
+    '<div class="kv-item"><div class="label">Egress</div><div class="value">' +
+    u.egress_gb.toLocaleString() + ' GB</div></div>' +
+    '<div class="kv-item"><div class="label">Storage GB-hours</div><div class="value">' +
+    u.storage_gb_hours.toLocaleString() + '</div></div>';
+}
+
+async function loadUsage() {
+  const usage = await fetchJSON("/usage");
+  const u = usage["tenant-a"] || usage[Object.keys(usage)[0]];
+  document.getElementById("usage-kv").innerHTML =
+    '<div class="kv-item"><div class="label">Storage GB-hours</div><div class="value">' +
+    u.storage_gb_hours.toLocaleString() + '</div></div>' +
+    '<div class="kv-item"><div class="label">Requests</div><div class="value">' +
+    u.requests.toLocaleString() + '</div></div>' +
+    '<div class="kv-item"><div class="label">Egress (GB)</div><div class="value">' +
+    u.egress_gb.toLocaleString() + '</div></div>';
+}
+
+async function loadInvoices() {
+  const inv = await fetchJSON("/invoices");
+  const rows = inv.map(i => ({
+    id: i.id, period: i.period, amount: i.amount + " " + i.currency,
+    state: i.state, due: i.due,
+    storage: "-", requests: "-", egress: "-"
+  }));
+  render("invoices-table", rows, ["id", "period", "storage", "requests", "egress", "amount", "state", "due"]);
+}
+
+async function loadKeys() {
+  const keys = await fetchJSON("/keys");
+  const rows = keys.filter(k => k.tenant === "tenant-a");
+  render("keys-table", rows, ["access_key", "created", "state"]);
+}
+
+async function loadBuckets() {
+  const buckets = await fetchJSON("/buckets");
+  const rows = buckets.filter(b => b.tenant === "tenant-a");
+  render("buckets-table", rows, ["name", "storage_class", "size_gb", "objects", "versioning", "object_lock"]);
+}
+
+document.getElementById("key-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = {
+    tenant: "tenant-a",
+    user: document.getElementById("key-user").value,
+  };
+  await fetch("/admin/keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  document.getElementById("key-form").reset();
+  await loadKeys();
+  showToast("Access key created");
+});
+
+(async () => {
+  await loadOverview();
+  await loadUsage();
+  await loadInvoices();
+  await loadKeys();
+  await loadBuckets();
+})();
+</script>
+</body>
+</html>

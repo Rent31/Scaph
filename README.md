@@ -1,333 +1,179 @@
-# Ceph - a scalable distributed storage system
-
-See https://ceph.com/ for current information about Ceph.
-
-## Status
-
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/2220/badge)](https://www.bestpractices.dev/projects/2220)
-[![Issue Backporting](https://github.com/ceph/ceph/actions/workflows/create-backport-trackers.yml/badge.svg)](https://github.com/ceph/ceph/actions/workflows/create-backport-trackers.yml)
-
-## Contributing Code
-
-Most of Ceph is dual-licensed under the LGPL version 2.1 or 3.0. Some
-miscellaneous code is either public domain or licensed under a BSD-style
-license.
-
-The Ceph documentation is licensed under Creative Commons Attribution Share
-Alike 3.0 (CC-BY-SA-3.0). 
-
-Some headers included in the `ceph/ceph` repository are licensed under the GPL.
-See the file `COPYING` for a full inventory of licenses by file.
-
-All code contributions must include a valid "Signed-off-by" line. See the file
-`SubmittingPatches.rst` for details on this and instructions on how to generate
-and submit patches.
-
-Assignment of copyright is not required to contribute code. Code is
-contributed under the terms of the applicable license.
-
-
-## Checking out the source
-
-Clone the ceph/ceph repository from github by running the following command on
-a system that has git installed:
-
-	git clone git@github.com:ceph/ceph
-
-Alternatively, if you are not a github user, you should run the following
-command on a system that has git installed:
-
-	git clone https://github.com/ceph/ceph.git
-
-When the `ceph/ceph` repository has been cloned to your system, run the
-following commands to move into the cloned `ceph/ceph` repository and to check
-out the git submodules associated with it:
-
-    cd ceph
-	git submodule update --init --recursive --progress
-
-
-## Build Prerequisites
-
-*section last updated 06 Sep 2024*
-
-We provide the Debian and Ubuntu ``apt`` commands in this procedure. If you use
-a system with a different package manager, then you will have to use different
-commands. 
-
-#. Install ``curl``:
-
-    apt install curl
-
-#. Install package dependencies by running the ``install-deps.sh`` script:
-
-	./install-deps.sh
-
-#. Install the ``python3-routes`` package:
-
-    apt install python3-routes
-
-
-## Building Ceph
-
-These instructions are meant for developers who are compiling the code for
-development and testing. To build binaries that are suitable for installation
-we recommend that you build `.deb` or `.rpm` packages, or refer to
-``ceph.spec.in`` or ``debian/rules`` to see which configuration options are
-specified for production builds.
-
-To build Ceph, follow this procedure: 
-
-1. Make sure that you are in the top-level `ceph` directory that
-   contains `do_cmake.sh` and `CONTRIBUTING.rst`.
-2. Run the `do_cmake.sh` script:
-
-       ./do_cmake.sh
-
-   See [build types](#build-types).
-
-3. Move into the `build` directory:
-
-       cd build
-4. Use the `ninja` buildsystem to build the development environment:
-
-       ninja -j3
-
-   > [!IMPORTANT]
-   >
-   > [Ninja](https://ninja-build.org/) is the build system used by the Ceph
-   > project to build test builds.  The number of jobs used by `ninja` is 
-   > derived from the number of CPU cores of the building host if unspecified. 
-   > Use the `-j` option to limit the job number if build jobs are running 
-   > out of memory. If you attempt to run `ninja` and receive a message that 
-   > reads `g++: fatal error: Killed signal terminated program cc1plus`, then 
-   > you have run out of memory.
-   >
-   > Using the `-j` option with an argument appropriate to the hardware on
-   > which the `ninja` command is run is expected to result in a successful
-   > build. For example, to limit the job number to 3, run the command `ninja
-   > -j3`. On average, each `ninja` job run in parallel needs approximately
-   > 2.5 GiB of RAM.
-
-   This documentation assumes that your build directory is a subdirectory of
-   the `ceph.git` checkout. If the build directory is located elsewhere, point
-   `CEPH_GIT_DIR` to the correct path of the checkout. Additional CMake args 
-   can be specified by setting ARGS before invoking ``do_cmake.sh``. 
-   See [cmake options](#cmake-options) for more details. For example:
-
-       ARGS="-DCMAKE_C_COMPILER=gcc-7" ./do_cmake.sh
-
-   To build only certain targets, run a command of the following form:
-
-       ninja [target name]
-
-5. Install the vstart cluster:
-
-       ninja install
-
-## Build Types
-
-``do_cmake.sh`` by default creates a "debug build" of Ceph (assuming `.git` exists).
-A ``Debug`` build runtime performance may be as little as 20% of that of a non-debug build.
-Pass ``-DCMAKE_BUILD_TYPE=RelWithDebInfo`` to ``do_cmake.sh`` to create a
-non-debug build.
-The default build type is ``RelWithDebInfo`` once `.git` does not exist.
-
-| CMake mode          | Debug info | Optimizations      | Sanitizers          | Checks                   | Use for           |
-| ------------------- | ---------- | -------------------|-------------------- | -------------------------| ------------------|
-| `Debug`             | Yes        | `-Og`              | None                | `ceph_assert`, `assert`  | gdb, development  |
-| `RelWithDebInfo`    | Yes        | `-O2`, `-DNDEBUG`  | None                | `ceph_assert` only       | production        |
- 
-### CMake Options
-
-The `-D` flag can be used with `cmake` to speed up the process of building Ceph
-and to customize the build.
-
-#### Building without RADOS Gateway
-
-The RADOS Gateway is built by default. To build Ceph without the RADOS Gateway,
-run a command of the following form:
-
-	cmake -DWITH_RADOSGW=OFF [path to top-level ceph directory]
-
-#### Building with debugging and arbitrary dependency locations 
-
-Run a command of the following form to build Ceph with debugging and alternate
-locations for some external dependencies:
-
-	cmake -DCMAKE_INSTALL_PREFIX=/opt/ceph -DCMAKE_C_FLAGS="-Og -g3 -gdwarf-4" \
-	..
-
-Ceph has several bundled dependencies such as Boost, RocksDB and Arrow. By
-default, `cmake` builds these bundled dependencies from source instead of using
-libraries that are already installed on the system. You can opt to use these
-system libraries, as long as they meet Ceph's version requirements. To use
-system libraries, use `cmake` options like `WITH_SYSTEM_BOOST`, as in the
-following example:
-
-	cmake -DWITH_SYSTEM_BOOST=ON [...]
-
-To view an exhaustive list of -D options, invoke `cmake -LH`:
-
-	cmake -LH
-
-#### Preserving diagnostic colors
-
-If you pipe `ninja` to `less` and would like to preserve the diagnostic colors
-in the output in order to make errors and warnings more legible, run the
-following command:  
-
-	cmake -DDIAGNOSTICS_COLOR=always ...
-
-The above command works only with supported compilers.
-
-The diagnostic colors will be visible when the following command is run: 
-
-	ninja | less -R
-
-Other available values for `DIAGNOSTICS_COLOR` are `auto` (default) and
-`never`.
-
-## Tips and Tricks
-
-   * Use "debug builds" only when needed. Debugging builds are helpful for
-     development, but they can slow down performance. Use
-     `-DCMAKE_BUILD_TYPE=Release` when debugging isn't necessary.
-   * Enable Selective Daemons when testing specific components. Don't start
-     unnecessary daemons.
-   * Preserve Existing Data skip cluster reinitialization between tests by
-     using the `-n` flag.
-   * To manage a vstart cluster, stop daemons using `./stop.sh` and start them
-     with `./vstart.sh --daemon osd.${ID} [--nodaemonize]`. 
-   * Restart the sockets by stopping and restarting the daemons associated with
-     them. This ensures that there are no stale sockets in the cluster.
-   * To track RocksDB performance, set `export ROCKSDB_PERF=true` and start
-     the cluster by using the command `./vstart.sh -n -d -x --bluestore`. 
-   * Build with `vstart-base` using debug flags in cmake, compile, and deploy
-     via `./vstart.sh -d -n --bluestore`.
-   * To containerize, generate configurations with `vstart.sh`, and deploy with
-     Docker, mapping directories and configuring the network.
-   * Manage containers using `docker run`, `stop`, and `rm`. For detailed
-     setups, consult the Ceph-Container repository.
-
-##  Troubleshooting     
- 
-   * Cluster Fails to Start: Look for errors in the logs under the `out/`
-     directory.
-   * OSD Crashes: Check the OSD logs for errors.
-   * Cluster in a `Health Error` State: Run the `ceph status` command to
-     identify the issue.
-   * RocksDB Errors: Look for RocksDB-related errors in the OSD logs.
-
-## Building a source tarball
-
-To build a complete source tarball with everything needed to build from
-source and/or build a (deb or rpm) package, run
-
-	./make-dist
-
-This will create a tarball like ceph-$version.tar.bz2 from git.
-(Ensure that any changes you want to include in your working directory
-are committed to git.)
-
-
-## Running a test cluster
-
-From the `ceph/` directory, run the following commands to launch a test Ceph
-cluster:
-
-	cd build
-	ninja vstart        # builds just enough to run vstart
-	../src/vstart.sh --debug --new -x --localhost --bluestore
-	./bin/ceph -s
-
-Most Ceph commands are available in the `bin/` directory. For example:
-
-	./bin/rbd create foo --size 1000
-	./bin/rados -p foo bench 30 write
-
-To shut down the test cluster, run the following command from the `build/`
-directory:
-
-	../src/stop.sh
-
-Use the sysvinit script to start or stop individual daemons: 
-
-	./bin/init-ceph restart osd.0
-	./bin/init-ceph stop
-
-
-## Running unit tests
-
-To build and run all tests (in parallel using all processors), use `ctest`:
-
-	cd build
-	ninja
-	ctest -j$(nproc)
-
-(Note: Many targets built from src/test are not run using `ctest`.
-Targets starting with "unittest" are run in `ninja check` and thus can
-be run with `ctest`. Targets starting with "ceph_test" can not, and should
-be run by hand.)
-
-When failures occur, look in build/Testing/Temporary for logs.
-
-To build and run all tests and their dependencies without other
-unnecessary targets in Ceph:
-
-	cd build
-	ninja check -j$(nproc)
-
-To run an individual test manually, run `ctest` with -R (regex matching):
-
-	ctest -R [regex matching test name(s)]
-
-(Note: `ctest` does not build the test it's running or the dependencies needed
-to run it)
-
-To run an individual test manually and see all the tests output, run
-`ctest` with the -V (verbose) flag:
-
-	ctest -V -R [regex matching test name(s)]
-
-To run tests manually and run the jobs in parallel, run `ctest` with 
-the `-j` flag:
-
-	ctest -j [number of jobs]
-
-There are many other flags you can give `ctest` for better control
-over manual test execution. To view these options run:
-
-	man ctest
-
-
-### Building Ceph using Containers
-
-Ceph now provides tools to build the code, run unit tests, or build packages
-from within an OCI-style container using Podman or Docker! This allows one to
-build code for distributions other than the one you have on your system, avoids
-the need to install build dependencies for Ceph on your local system and
-provides an opportunity to test builds on platforms that are not yet supported
-by the official build infrastructure. For more details see the [container build
-document](ContainerBuild.md).
-
-
-## Building the Documentation
-
-### Prerequisites
-
-The list of package dependencies for building the documentation can be
-found in `doc_deps.deb.txt`:
-
-	sudo apt-get install `cat doc_deps.deb.txt`
-
-### Building the Documentation
-
-To build the documentation, ensure that you are in the top-level
-`/ceph` directory, and execute the build script. For example:
-
-	admin/build-doc
-
-## Reporting Issues
-
-To report an issue and view existing issues, please visit https://tracker.ceph.com/projects/ceph.
+# Scaph - scalable distributed object storage
+
+<img src="doc/scaph-logo.png" alt="Scaph logo" width="120" height="120" align="right">
+
+Scaph is an S3-compatible object storage platform built on Ceph. It stores
+objects as erasure-coded chunks spread across failure domains, heals itself
+after disk or node failures, rebalances automatically when capacity changes,
+and exposes a full S3 API with versioning, bucket policies, ACLs, Object Lock,
+quotas, usage metering, and rate limiting.
+
+Scaph runs on commodity hardware. Mix any server model, CPU, and disk type
+(SATA, SAS, NVMe). There is no vendor lock-in.
+
+## Features
+
+Storage infrastructure
+- Erasure coding with configurable profiles (4+2, 8+3, ...) per pool or storage class
+- Auto-healing: automatic rebuild after disk or server failure
+- Auto-rebalancing: redistribution when nodes or disks are added or removed
+- Throttled recovery: rebuild speed limits so customer latency is not affected
+- Failure-domain awareness: chunks are placed across hosts or racks, never in one domain
+- Mixed disk types: separate pools per disk type, exposed as storage classes
+- Hardware-independent cluster: any server model, CPU, and disk type
+- NVMe metadata tier: bucket index and metadata on NVMe for small-object performance
+- Data scrubbing: periodic integrity checks against silent bit-rot
+- Rolling upgrades: upgrade nodes one at a time with zero downtime
+
+S3 API and data
+- Core S3 API: multipart upload, presigned URLs, SigV4, CORS
+- Path-style and virtual-hosted-style endpoints
+- Unlimited objects per bucket; index resharding scales automatically
+- Versioning and Object Lock (governance, compliance, legal hold)
+- Bucket policies in JSON with conditions (for example source IP)
+- Bucket and object ACLs
+- Server access logs per bucket
+- Bucket notifications (webhooks on create/delete)
+- Static website hosting from a bucket
+- Lifecycle policies (tier transitions by age)
+- Object legal hold (per object and per bucket)
+
+Multi-tenancy and billing
+- Tenant isolation: separate namespace, users, and keys per customer
+- Sub-users and access keys with rotation
+- Quotas: capacity and object-count limits per tenant and bucket
+- Usage metering: storage GB-hours, requests, and egress exported to billing
+- Rate limiting / QoS per tenant
+- Admin provisioning API for tenant signup from the customer portal
+
+Security and compliance
+- TLS in transit for all API and replication traffic
+- SSE-S3 and SSE-C encryption at rest
+- SSE-KMS with external key management (KMS integration)
+- Audit logging of admin and API actions
+- Object legal hold (WORM) per object and per bucket
+
+Operations
+- Monitoring and alerting: disk health, latency, capacity, rebuilds
+- Metadata and config backup with scheduling and retention
+- Ransomware protection via versioning and Object Lock
+- Cross-zone replication with lag monitoring
+- Disaster recovery failover/failback (RPO 15 min, RTO 1 hr)
+- Global load balancer with endpoint failover across zones
+- Ransomware recovery drills with verification
+- Per-tenant rate limiting enforcement (token bucket)
+- Per-tenant quota enforcement on object writes
+- Bucket quarantine for ransomware isolation
+- Emergency lock-down for security incidents
+- Cost optimization advisor (tier transition recommendations)
+- Data egress optimizer for cost reduction
+- Auto-tiering by access frequency
+- Security scanner for issues and remediation
+- Compliance reporting (SOC2, GDPR, HIPAA, PCI-DSS)
+
+Storage tiers (AWS-style)
+- Standard: hot data on SAS or NVMe
+- Infrequent Access: warm data on SATA with erasure coding
+- Archive / Cold: wide erasure coding (for example 8+3) on high-density SATA
+
+## Quick start (single node)
+
+Scaph provides a one-command deploy tool that installs dependencies, creates
+the configuration, boots the monitor, manager, storage daemons, and the S3
+gateway, and provisions the first tenant:
+
+```
+./tools/scaph-deploy
+```
+
+The script prints the admin credentials and the URL of the web console when it
+finishes. See `tools/scaph-deploy --help` for options.
+
+## Web console and billing dashboard
+
+Scaph ships with a modern IaaS web console (`web/console`) and a user billing
+dashboard (`web/billing`). Serve them with any HTTP server, or run the bundled
+API server:
+
+```
+cd web
+./scaph-api
+```
+
+The console is for cluster administration: nodes, disks, pools, erasure
+profiles, buckets, tenants, keys, and billing. The billing dashboard is for
+customers: usage (storage GB-hours, requests, egress), invoices, access keys,
+and buckets.
+
+Design rules for both interfaces: square corners only, no gradients, no
+emojis, no decorative flourishes.
+
+## Improvements over the base codebase
+
+The following functional changes were made in this overhaul:
+
+1. New IaaS web console for cluster administration (`web/console`).
+2. New user billing dashboard with metering and invoices (`web/billing`).
+3. New `scaph-api` API server backing both interfaces (`web/scaph-api`).
+4. New one-command deploy tool `tools/scaph-deploy` for single-node setup.
+5. New `tools/scaph-status` cluster health check tool.
+6. New `tools/scaph-meter` usage metering collector for billing export.
+7. Dockerfile for the console and API server (`web/Dockerfile`).
+8. systemd service unit for the API server (`systemd/scaph-api.service`).
+9. OpenAPI spec for the API (`web/openapi.json`).
+10. Usage metering exporter hook: RGW usage logs feed the billing API.
+11. Billing data model: tenants, invoices, line items, and payment status.
+12. Rate-limit and quota UI in the admin console.
+13. Audit log viewer in the admin console.
+14. Erasure profile manager in the admin console (4+2, 8+3, custom).
+15. Recovery throttle controls in the admin console.
+16. Scrubbing schedule and status view in the admin console.
+17. Storage class UI mapping tiers to disk types (Standard / IA / Archive).
+18. Object Lock and versioning controls per bucket.
+19. Presigned URL generator in the console.
+20. Tenant provisioning API endpoint (POST /admin/tenants).
+21. Access key creation and rotation UI for customers.
+22. Lifecycle policy engine (background transition of objects between tiers)
+23. Server access logs viewer (per-bucket request logs)
+24. Bucket notifications / webhooks with retry delivery
+25. Static website hosting configuration per bucket
+26. KMS / SSE-KMS key management (create, enable, disable, rotate, encrypt/decrypt)
+27. Cross-zone replication configuration and lag monitoring
+28. Per-tenant rate limiting enforcement (token bucket)
+29. Per-tenant quota enforcement on object writes
+30. Object legal hold (WORM) per object and per bucket
+31. Disaster recovery failover/failback with RPO/RTO targets
+32. Ransomware recovery drill runner with verification
+33. Cost optimization advisor (tier transition recommendations)
+34. Global load balancer with active-passive endpoint failover and health checks
+35. Configuration backup with scheduling, retention, and manual creation
+36. CDN origin integration per bucket with edge caching configuration
+37. Auto-tiering engine: background transitions based on access frequency
+38. Compliance reporting: SOC2, GDPR, HIPAA, PCI-DSS report generation
+39. Security scanner: finds public buckets, unrotated keys, missing versioning
+40. Bucket quarantine: isolate buckets suspected of ransomware activity
+41. Network policies: IP allow/block lists per tenant
+42. Emergency lock-down: instant cluster-wide or per-bucket freeze
+43. Data egress optimizer: access-pattern analysis for egress cost reduction
+44. Web console pages for all Phase 2 and Phase 3 features
+45. Background subsystems: LB health checker, config backup scheduler, auto-tiering engine, security scanner
+
+## Building
+
+Scaph is C++. Build with CMake and Ninja:
+
+```
+./do_cmake.sh
+cd build
+ninja -j$(nproc)
+```
+
+Build dependencies are installed by `./install-deps.sh`. Submodules must be
+checked out with `git submodule update --init --recursive`.
+
+Packaging produces `.deb` and `.rpm` packages named `scaph`.
+
+## License
+
+Most of Scaph is dual-licensed under the LGPL version 2.1 or 3.0. See the
+file COPYING for a full inventory of licenses by file.

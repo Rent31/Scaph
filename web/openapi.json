@@ -1,0 +1,49 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "Scaph API",
+    "version": "1.0.0",
+    "description": "S3-compatible object storage admin and billing API. Served by web/scaph-api at /api/openapi.json."
+  },
+  "servers": [
+    {"url": "http://localhost:8080/api"}
+  ],
+  "paths": {
+    "/cluster/health": {
+      "get": {"summary": "Cluster health", "operationId": "getClusterHealth"}
+    },
+    "/nodes": {"get": {"summary": "List cluster nodes"}},
+    "/disks": {"get": {"summary": "List disks"}},
+    "/pools": {"get": {"summary": "List storage pools"}},
+    "/erasure-profiles": {"get": {"summary": "List erasure profiles"}},
+    "/recovery": {"get": {"summary": "Recovery status"}},
+    "/scrubbing": {"get": {"summary": "Data scrubbing status"}},
+    "/buckets": {"get": {"summary": "List buckets"}},
+    "/buckets/{name}/lifecycle": {
+      "get": {"summary": "Get lifecycle policy"},
+      "put": {"summary": "Set lifecycle policy"},
+      "delete": {"summary": "Delete lifecycle policy"}
+    },
+    "/buckets/{name}/access-logs": {"get": {"summary": "Get server access logs"}},
+    "/buckets/{name}/notifications": {
+      "get": {"summary": "Get bucket notifications"},
+      "put": {"summary": "Set bucket notifications"}
+    },
+    "/buckets/{name}/presigned-url": {
+      "post": {"summary": "Generate presigned URL"}
+    },
+    "/tenants": {
+      "get": {"summary": "List tenants"},
+      "post": {"summary": "Create tenant (admin provisioning)"}
+    },
+    "/users": {"get": {"summary": "List users"}},
+    "/keys": {
+      "get": {"summary": "List access keys"},
+      "post": {"summary": "Create access key"}
+    },
+    "/audit-log": {"get": {"summary": "Audit log"}},
+    "/invoices": {"get": {"summary": "List invoices"}},
+    "/usage": {"get": {"summary": "Usage metering"}},
+    "/me": {"get": {"summary": "Current authenticated user"}}
+  }
+}

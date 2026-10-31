@@ -1,0 +1,18 @@
+[Unit]
+Description=Scaph API server (web console and billing dashboard)
+After=network.target ceph.target
+Wants=ceph.target
+
+[Service]
+Type=simple
+WorkingDirectory=/scaph/web
+ExecStart=/usr/bin/python3 /scaph/web/scaph-api
+Restart=always
+RestartSec=5
+User=scaph
+Group=scaph
+Environment=SCAPH_API_PORT=8080
+Environment=SCAPH_API_SECRET=scaph-secret-change-in-production
+
+[Install]
+WantedBy=multi-user.target

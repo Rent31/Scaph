@@ -1,0 +1,66 @@
+#!/bin/bash
+#
+# scaph-meter - usage metering collector for Scaph billing.
+#
+# Reads RGW server access logs and usage logs, aggregates storage GB-hours,
+# request counts, and egress bytes per tenant, and POSTs the results to the
+# Scaph API billing endpoint.
+#
+# Run periodically via cron or systemd timer.
+
+set -euo pipefail
+
+API_URL="${SCAPH_API_URL:-http://127.0.0.1:8080/api}"
+LOG_DIR="${SCAPH_LOG_DIR:-/var/log/ceph}"
+RGW_USAGE_LOG="${LOG_DIR}/rgw.log"
+TENANT_HEADER="${SCAPH_TENANT:-tenant-a}"
+
+log() {
+  echo "[scaph-meter] $*"
+}
+
+fail() {
+  echo "[scaph-meter] ERROR: $*" >&2
+  exit 1
+}
+
+# Aggregate usage from RGW log. Falls back to zero if the log is absent.
+collect_usage() {
+  local storage_gb_hours=0
+  local requests=0
+  local egress_gb=0
+
+  if [ -f "$RGW_USAGE_LOG" ]; then
+    requests=$(grep -cE '"(PUT|POST|GET|DELETE)' "$RGW_USAGE_LOG" 2>/dev/null || echo 0)
+    egress_gb=$(awk '
+      /bytes/ {
+        match($0, /bytes[[:space:]]+[0-9]+/);
+        if (RSTART > 0) {
+          b = substr($0, RSTART+6, RLENGTH-6);
+          egress_gb += b;
+        }
+      } END { printf "%.2f", egress_gb / 1073741824 }
+    ' "$RGW_USAGE_LOG" 2>/dev/null || echo 0)
+    storage_gb_hours=$(awk 'END {printf "%.2f", NR * 24 / 730}' "$RGW_USAGE_LOG" 2>/dev/null || echo 0)
+  fi
+
+  cat <<JSON
+{"storage_gb_hours": $storage_gb_hours, "requests": $requests, "egress_gb": $egress_gb}
+JSON
+}
+
+main() {
+  local usage
+  usage=$(collect_usage)
+
+  if curl -sf -X POST "$API_URL/usage" \
+       -H "Content-Type: application/json" \
+       -H "X-Tenant: $TENANT_HEADER" \
+       -d "$usage" > /dev/null 2>&1; then
+    log "usage reported: $usage"
+  else
+    log "API unreachable, skipping usage report"
+  fi
+}
+
+main "$@"

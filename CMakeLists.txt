@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(ceph
+project(scaph
   VERSION 22.0.0
   LANGUAGES CXX C ASM)
 

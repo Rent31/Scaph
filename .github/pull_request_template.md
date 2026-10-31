@@ -30,21 +30,21 @@
 - Tracker (select at least one)
   - [ ] References tracker ticket
   - [ ] Very recent bug; references commit where it was introduced
-  - [ ] New feature (ticket optional)
+  - [x] New feature (ticket optional)
   - [ ] Doc update (no ticket needed)
   - [ ] Code cleanup (no ticket needed)
 - Component impact
   - [ ] Affects [Dashboard](https://tracker.ceph.com/projects/dashboard/issues/new), opened tracker ticket
   - [ ] Affects [Orchestrator](https://tracker.ceph.com/projects/orchestrator/issues/new), opened tracker ticket
-  - [ ] No impact that needs to be tracked
+  - [x] No impact that needs to be tracked
 - Documentation (select at least one)
-  - [ ] Updates relevant documentation
+  - [x] Updates relevant documentation
   - [ ] No doc update is appropriate
 - Tests (select at least one)
   - [ ] Includes [unit test(s)](https://docs.ceph.com/en/latest/dev/developer_guide/tests-unit-tests/)
   - [ ] Includes [integration test(s)](https://docs.ceph.com/en/latest/dev/developer_guide/testing_integration_tests/)
   - [ ] Includes bug reproducer
-  - [ ] No tests
+  - [x] No tests
 
 <details>
 <summary>Show available Jenkins commands</summary>

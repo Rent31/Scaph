@@ -1,0 +1,2151 @@
+#!/usr/bin/env python3
+"""Scaph API server - enterprise IaaS object storage control plane.
+
+Serves the web console and billing dashboard and provides the JSON endpoints
+they consume. Implements Phase 2 and Phase 3 features: lifecycle enforcement,
+bucket notifications, static website hosting, KMS/SSE-KMS, cross-zone
+replication, rate limiting, quota enforcement, object legal hold, ransomware
+recovery drills, and cost optimization.
+
+In production these endpoints are backed by the RGW admin API, the Prometheus
+exporter, and the Ceph manager. This build ships with demo data so the console
+works immediately after `./tools/scaph-deploy`.
+"""
+
+import base64
+import hashlib
+import json
+import os
+import threading
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+
+WEB_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)))
+PORT = int(os.environ.get("SCAPH_API_PORT", "8080"))
+SECRET = os.environ.get("SCAPH_API_SECRET", "scaph-secret-change-in-production")
+
+# Tier pricing (per GB-month unless noted)
+TIER_PRICING = {
+    "STANDARD": {"storage": 0.023, "request": 0.005, "retrieval": 0.00},
+    "STANDARD_IA": {"storage": 0.0125, "request": 0.005, "retrieval": 0.01},
+    "GLACIER": {"storage": 0.004, "request": 0.005, "retrieval": 0.025},
+}
+
+# ---------------------------------------------------------------------------
+# In-memory stores. Replace these with real Ceph/RGW backends in production.
+# ---------------------------------------------------------------------------
+
+CLUSTER_HEALTH = {
+    "status": "HEALTH_OK",
+    "updated": "2026-10-31T10:00:00Z",
+    "details": [
+        {"check": "mon", "status": "OK", "detail": "3 monitors in quorum"},
+        {"check": "osd", "status": "OK", "detail": "12 OSDs up, 12 in"},
+        {"check": "rgw", "status": "OK", "detail": "2 gateway instances"},
+        {"check": "recovery", "status": "OK", "detail": "no active recovery"},
+    ],
+}
+
+NODES = [
+    {"id": "node-1", "hostname": "scaph-node-1", "role": "mon,mgr,osd,rgw",
+     "state": "up", "cpu": 24, "mem_gb": 128, "disk_gb": 16000,
+     "used_gb": 4120, "rack": "rack-a"},
+    {"id": "node-2", "hostname": "scaph-node-2", "role": "osd,rgw",
+     "state": "up", "cpu": 24, "mem_gb": 128, "disk_gb": 16000,
+     "used_gb": 3980, "rack": "rack-a"},
+    {"id": "node-3", "hostname": "scaph-node-3", "role": "osd",
+     "state": "up", "cpu": 24, "mem_gb": 128, "disk_gb": 16000,
+     "used_gb": 4310, "rack": "rack-b"},
+]
+
+DISKS = [
+    {"id": "disk-1", "node": "node-1", "path": "/dev/sdb", "type": "SATA",
+     "size_gb": 8000, "used_gb": 2060, "state": "up"},
+    {"id": "disk-2", "node": "node-1", "path": "/dev/sdc", "type": "SATA",
+     "size_gb": 8000, "used_gb": 2060, "state": "up"},
+    {"id": "disk-3", "node": "node-2", "path": "/dev/nvme0n1", "type": "NVMe",
+     "size_gb": 1600, "used_gb": 410, "state": "up", "tier": "metadata"},
+    {"id": "disk-4", "node": "node-3", "path": "/dev/sdb", "type": "SAS",
+     "size_gb": 1600, "used_gb": 980, "state": "up", "tier": "standard"},
+]
+
+POOLS = [
+    {"name": "std-hot", "type": "erasure", "profile": "4+2",
+     "disk_type": "SAS", "size_gb": 12000, "used_gb": 3100,
+     "objects": 4820000},
+    {"name": "ia-warm", "type": "erasure", "profile": "8+3",
+     "disk_type": "SATA", "size_gb": 28000, "used_gb": 7400,
+     "objects": 12600000},
+    {"name": "cold-archive", "type": "erasure", "profile": "8+3",
+     "disk_type": "SATA", "size_gb": 48000, "used_gb": 1900,
+     "objects": 310000},
+    {"name": ".metadata", "type": "replicated", "size": 3,
+     "disk_type": "NVMe", "size_gb": 4800, "used_gb": 1240,
+     "objects": 17400000},
+]
+
+ERASURE_PROFILES = [
+    {"name": "standard", "k": 4, "m": 2, "crush_root": "default",
+     "failure_domain": "host"},
+    {"name": "cold", "k": 8, "m": 3, "crush_root": "default",
+     "failure_domain": "host"},
+    {"name": "fast", "k": 6, "m": 2, "crush_root": "nvme",
+     "failure_domain": "host"},
+]
+
+RECOVERY = {
+    "state": "idle",
+    "throttle_mbps": 50,
+    "progress": None,
+    "last_rebuild": "2026-10-28T03:15:00Z",
+}
+
+SCRUBBING = {
+    "schedule": "daily 02:00",
+    "last_run": "2026-10-30T02:00:00Z",
+    "status": "OK",
+    "errors": 0,
+    "scrubbing_now": [],
+}
+
+BUCKETS = [
+    {"name": "tenant-a-backups", "tenant": "tenant-a", "storage_class": "STANDARD",
+     "size_gb": 1240.5, "objects": 840000, "versioning": "Enabled",
+     "object_lock": "Compliance", "created": "2026-09-15",
+     "website": None, "legal_hold": False},
+    {"name": "tenant-a-archive", "tenant": "tenant-a", "storage_class": "GLACIER",
+     "size_gb": 890.2, "objects": 310000, "versioning": "Disabled",
+     "object_lock": "Disabled", "created": "2026-08-22",
+     "website": None, "legal_hold": False},
+    {"name": "tenant-b-media", "tenant": "tenant-b", "storage_class": "STANDARD_IA",
+     "size_gb": 4550.0, "objects": 2100000, "versioning": "Enabled",
+     "object_lock": "Governance", "created": "2026-10-01",
+     "website": None, "legal_hold": False},
+    {"name": "tenant-c-logs", "tenant": "tenant-c", "storage_class": "STANDARD",
+     "size_gb": 98.7, "objects": 14000000, "versioning": "Disabled",
+     "object_lock": "Disabled", "created": "2026-10-20",
+     "website": None, "legal_hold": False},
+]
+
+# Object index: bucket name -> {key: {storage_class, size, last_access, versions, legal_hold}}
+OBJECTS = {
+    "tenant-a-backups": {
+        "db-2026-10-31.dump": {"storage_class": "STANDARD", "size": 10485760,
+                               "last_access": "2026-10-31T09:42:10Z",
+                               "versions": 1, "legal_hold": False},
+        "db-2026-10-30.dump": {"storage_class": "STANDARD", "size": 10485760,
+                               "last_access": "2026-10-30T03:15:00Z",
+                               "versions": 2, "legal_hold": False},
+    },
+    "tenant-a-archive": {
+        "old-logs-2026-08.gz": {"storage_class": "GLACIER", "size": 5242880,
+                                "last_access": "2026-09-01T00:00:00Z",
+                                "versions": 1, "legal_hold": False},
+    },
+    "tenant-b-media": {
+        "video-2026-10-31.mp4": {"storage_class": "STANDARD_IA", "size": 524288000,
+                                 "last_access": "2026-10-31T09:35:00Z",
+                                 "versions": 1, "legal_hold": False},
+    },
+    "tenant-c-logs": {},
+}
+
+TENANTS = [
+    {"id": "tenant-a", "name": "Containers Inc", "plan": "standard",
+     "capacity_gb": 5000, "used_gb": 2130.7, "object_count": 1150000,
+     "object_limit": 20000000, "state": "active", "created": "2026-06-01",
+     "rate_limit_rps": 1000},
+    {"id": "tenant-b", "name": "Media Group", "plan": "infrequent",
+     "capacity_gb": 20000, "used_gb": 4550.0, "object_count": 2100000,
+     "object_limit": 50000000, "state": "active", "created": "2026-09-10",
+     "rate_limit_rps": 2000},
+    {"id": "tenant-c", "name": "Logs Co", "plan": "standard",
+     "capacity_gb": 1000, "used_gb": 98.7, "object_count": 14000000,
+     "object_limit": 100000000, "state": "active", "created": "2026-10-01",
+     "rate_limit_rps": 500},
+]
+
+USERS = [
+    {"id": "user-1", "tenant": "tenant-a", "name": "admin@example.com",
+     "email": "admin@example.com", "state": "active"},
+    {"id": "user-2", "tenant": "tenant-b", "name": "ops@mediagroup.example",
+     "email": "ops@mediagroup.example", "state": "active"},
+]
+
+KEYS = [
+    {"id": "key-1", "tenant": "tenant-a", "user": "admin@example.com",
+     "access_key": "SCAPH01A1B2C3D4E5F6", "secret_key": "****",
+     "created": "2026-06-01", "state": "active"},
+    {"id": "key-2", "tenant": "tenant-b", "user": "ops@mediagroup.example",
+     "access_key": "SCAPH01Z9Y8X7W6V5U4", "secret_key": "****",
+     "created": "2026-09-10", "state": "active"},
+]
+
+AUDIT_LOG = [
+    {"time": "2026-10-31T09:42:10Z", "actor": "admin@example.com",
+     "action": "bucket.create", "resource": "tenant-a/backups", "result": "OK"},
+    {"time": "2026-10-31T09:31:05Z", "actor": "ops@mediagroup.example",
+     "action": "object.put", "resource": "tenant-b/media/2026-10-31.log",
+     "result": "OK"},
+    {"time": "2026-10-31T08:15:00Z", "actor": "system",
+     "action": "osd.rebalance.start", "resource": "pool=ia-warm", "result": "OK"},
+    {"time": "2026-10-30T02:00:00Z", "actor": "system",
+     "action": "data.scrub", "resource": "cluster", "result": "OK"},
+]
+
+INVOICES = [
+    {"id": "INV-2026-09", "tenant": "tenant-a", "period": "2026-09-01 to 2026-09-30",
+     "amount": 312.40, "currency": "USD", "state": "paid", "due": "2026-10-05"},
+    {"id": "INV-2026-10", "tenant": "tenant-a", "period": "2026-10-01 to 2026-10-31",
+     "amount": 298.10, "currency": "USD", "state": "open", "due": "2026-11-05"},
+    {"id": "INV-2026-09", "tenant": "tenant-b", "period": "2026-09-01 to 2026-09-30",
+     "amount": 845.00, "currency": "USD", "state": "paid", "due": "2026-10-05"},
+    {"id": "INV-2026-10", "tenant": "tenant-b", "period": "2026-10-01 to 2026-10-31",
+     "amount": 910.50, "currency": "USD", "state": "open", "due": "2026-11-05"},
+]
+
+USAGE = {
+    "tenant-a": {"storage_gb_hours": 153400, "requests": 48000000,
+                 "egress_gb": 2100},
+    "tenant-b": {"storage_gb_hours": 328000, "requests": 112000000,
+                 "egress_gb": 6400},
+}
+
+# Lifecycle policies: bucket name -> {rules: [...]}
+LIFECYCLE_POLICIES = {
+    "tenant-a-archive": {
+        "rules": [
+            {"id": "transition-to-glacier", "status": "Enabled",
+             "filter": {"prefix": ""},
+             "transitions": [
+                 {"days": 90, "storage_class": "GLACIER"}
+             ]}
+        ]
+    }
+}
+
+# Lifecycle execution history: bucket name -> [events]
+LIFECYCLE_HISTORY = {
+    "tenant-a-archive": [
+        {"time": "2026-10-20T02:00:00Z", "bucket": "tenant-a-archive",
+         "key": "old-logs-2026-08.gz", "action": "transition",
+         "from": "STANDARD_IA", "to": "GLACIER", "result": "ok"},
+    ]
+}
+
+# Server access logs: bucket name -> [entries]
+ACCESS_LOGS = {
+    "tenant-a-backups": [
+        {"time": "2026-10-31T09:42:10Z", "remote_ip": "10.0.0.15",
+         "method": "PUT", "key": "backups/db-2026-10-31.dump",
+         "status": 200, "bytes": 10485760},
+        {"time": "2026-10-31T09:41:02Z", "remote_ip": "10.0.0.22",
+         "method": "GET", "key": "backups/db-2026-10-30.dump",
+         "status": 200, "bytes": 10485760},
+    ],
+    "tenant-b-media": [
+        {"time": "2026-10-31T09:35:00Z", "remote_ip": "10.0.0.33",
+         "method": "PUT", "key": "media/video-2026-10-31.mp4",
+         "status": 200, "bytes": 524288000},
+    ],
+}
+
+# Bucket notifications: bucket name -> {webhooks: [...]}
+BUCKET_NOTIFICATIONS = {
+    "tenant-a-backups": {
+        "webhooks": [
+            {"id": "wh-1", "topic": "s3:ObjectCreated:*",
+             "endpoint": "https://hooks.example.com/tenant-a/backups",
+             "state": "Enabled"}
+        ]
+    }
+}
+
+# Notification delivery queue and history: {id: {...}}
+NOTIFICATION_QUEUE = []
+NOTIFICATION_HISTORY = []
+
+# Presigned URL grants: token -> {bucket, key, method, expires_at}
+PRESIGNED_GRANTS = {}
+GRANTS_LOCK = threading.RLock()
+
+# Static website config: bucket name -> {index_document, error_document}
+WEBSITE_CONFIG = {}
+
+# KMS keys: key id -> {...}
+KMS_KEYS = {
+    "key-scaph-default": {
+        "id": "key-scaph-default", "name": "scaph-default",
+        "state": "enabled", "created": "2026-06-01T00:00:00Z",
+        "description": "Default cluster encryption key",
+        "key_material": base64.b64encode(os.urandom(32)).decode(),
+    },
+    "key-tenant-a": {
+        "id": "key-tenant-a", "name": "tenant-a-key",
+        "state": "enabled", "created": "2026-06-01T00:00:00Z",
+        "description": "Tenant-a customer-managed key",
+        "key_material": base64.b64encode(os.urandom(32)).decode(),
+    },
+}
+
+# SSE-KMS encrypted objects: (bucket, key) -> {key_id, ciphertext_b64}
+KMS_ENCRYPTED = {}
+
+# Cross-zone replication: bucket name -> {config, status}
+REPLICATION = {
+    "tenant-a-backups": {
+        "config": {
+            "rule_id": "rep-1", "status": "Enabled",
+            "destination_zone": "zone-b", "destination_bucket": "tenant-a-backups-replica",
+            "selection": {"storage_class": "STANDARD"},
+            "sync_time_minutes": 15,
+        },
+        "status": {
+            "state": "OK", "last_sync": "2026-10-31T09:45:00Z",
+            "pending_objects": 0, "failed_objects": 0,
+            "replication_lag_seconds": 420,
+        },
+    }
+}
+
+# Object legal hold state: (bucket, key) -> bool
+OBJECT_LEGAL_HOLD = {}
+
+# Rate limiter state: tenant id -> {tokens, last_update}
+RATE_LIMITER = {}
+
+# DR / failover state
+DR_STATE = {
+    "mode": "active-passive",
+    "primary_zone": "zone-a",
+    "secondary_zone": "zone-b",
+    "state": "primary_active",
+    "rpo_minutes": 15,
+    "rto_minutes": 60,
+    "last_failover": None,
+    "failback_in_progress": False,
+}
+
+# Ransomware recovery drills
+DRILLS = []
+
+# ---------------------------------------------------------------------------
+# Global load balancer / endpoint failover (active-passive across zones)
+# ---------------------------------------------------------------------------
+GLOBAL_LB = {
+    "enabled": True,
+    "primary_endpoint": "scaph.example.com",
+    "secondary_endpoint": "scaph-dr.example.com",
+    "primary_zone": "zone-a",
+    "secondary_zone": "zone-b",
+    "state": "primary_active",
+    "health_check_interval_seconds": 10,
+    "failover_threshold_seconds": 60,
+    "dns_ttl_seconds": 60,
+    "last_failover": None,
+    "failover_count": 0,
+    "primary_healthy": True,
+    "secondary_healthy": True,
+}
+
+# ---------------------------------------------------------------------------
+# Metadata and configuration backup
+# ---------------------------------------------------------------------------
+CONFIG_BACKUPS = [
+    {
+        "id": "backup-001",
+        "time": "2026-10-30T02:00:00Z",
+        "type": "full",
+        "size_mb": 48.2,
+        "status": "ok",
+        "includes": ["cluster_config", "users", "keys", "bucket_index", "policies"],
+    },
+    {
+        "id": "backup-002",
+        "time": "2026-10-31T02:00:00Z",
+        "type": "incremental",
+        "size_mb": 3.1,
+        "status": "ok",
+        "includes": ["bucket_index", "policies"],
+    },
+]
+CONFIG_BACKUP_SCHEDULE = "daily 02:00"
+CONFIG_BACKUP_RETENTION_DAYS = 30
+
+# ---------------------------------------------------------------------------
+# CDN origin integration
+# ---------------------------------------------------------------------------
+CDN_ORIGINS = {
+    "tenant-a-backups": {
+        "origin_id": "cdn-1",
+        "domain": "cdn-a-backups.scaph.example.com",
+        "origin_protocol_policy": "https-only",
+        "default_ttl_seconds": 86400,
+        "state": "Enabled",
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Auto-tiering (access-frequency based tier transitions)
+# ---------------------------------------------------------------------------
+AUTO_TIERING_POLICIES = {
+    "tenant-a-backups": {
+        "enabled": True,
+        "rules": [
+            {"access_days": 30, "from": "STANDARD", "to": "STANDARD_IA"},
+            {"access_days": 90, "from": "STANDARD_IA", "to": "GLACIER"},
+        ],
+    },
+}
+AUTO_TIERING_RUN_HISTORY = []
+
+# ---------------------------------------------------------------------------
+# Compliance reporting
+# ---------------------------------------------------------------------------
+COMPLIANCE_FRAMEWORKS = ["SOC2", "GDPR", "HIPAA", "PCI-DSS"]
+COMPLIANCE_REPORTS = []
+
+# ---------------------------------------------------------------------------
+# Security scanner findings
+# ---------------------------------------------------------------------------
+SECURITY_FINDINGS = [
+    {
+        "id": "sec-001",
+        "time": "2026-10-31T01:00:00Z",
+        "severity": "high",
+        "resource": "bucket/tenant-c-logs",
+        "issue": "bucket allows public read access",
+        "recommendation": "remove public ACL grant",
+        "state": "open",
+    },
+    {
+        "id": "sec-002",
+        "time": "2026-10-30T03:00:00Z",
+        "severity": "medium",
+        "resource": "tenant/tenant-c",
+        "issue": "access key older than 90 days without rotation",
+        "recommendation": "rotate access keys",
+        "state": "open",
+    },
+]
+
+# ---------------------------------------------------------------------------
+# Bucket quarantine (ransomware / suspicious activity isolation)
+# ---------------------------------------------------------------------------
+BUCKET_QUARANTINE = {}
+
+# ---------------------------------------------------------------------------
+# Network policies (IP allow / block lists per tenant)
+# ---------------------------------------------------------------------------
+NETWORK_POLICIES = {
+    "tenant-a": {
+        "allow_list": ["10.0.0.0/8", "172.16.0.0/12"],
+        "block_list": ["203.0.113.0/24"],
+        "state": "Enabled",
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Emergency lock-down
+# ---------------------------------------------------------------------------
+EMERGENCY_LOCK = {
+    "cluster_locked": False,
+    "locked_by": None,
+    "locked_at": None,
+    "reason": None,
+    "bucket_locks": {},
+}
+
+# ---------------------------------------------------------------------------
+# Data egress optimizer
+# ---------------------------------------------------------------------------
+EGRESS_CACHE_HINTS = {
+    "tenant-a-backups": {
+        "hot_prefixes": ["backups/db-2026-10-"],
+        "cold_prefixes": ["backups/db-2026-09-"],
+        "estimated_egress_savings_percent": 34,
+    },
+}
+
+LOCK = threading.RLock()
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _audit(actor, action, resource, result="OK"):
+    with LOCK:
+        AUDIT_LOG.insert(0, {
+            "time": _now_iso(), "actor": actor, "action": action,
+            "resource": resource, "result": result,
+        })
+        if len(AUDIT_LOG) > 2000:
+            del AUDIT_LOG[2000:]
+
+
+def _tenant_from_headers(headers):
+    return headers.get("X-Tenant", "tenant-a")
+
+
+def _rate_limit_allow(tenant_id):
+    """Token bucket rate limiter. Returns True if request is allowed."""
+    rps = 1000
+    with LOCK:
+        for t in TENANTS:
+            if t["id"] == tenant_id:
+                rps = t.get("rate_limit_rps", 1000)
+                break
+        now = time.time()
+        state = RATE_LIMITER.get(tenant_id)
+        if state is None:
+            state = {"tokens": float(rps), "last_update": now}
+            RATE_LIMITER[tenant_id] = state
+        elapsed = now - state["last_update"]
+        state["tokens"] = min(rps, state["tokens"] + elapsed * rps)
+        state["last_update"] = now
+        if state["tokens"] >= 1.0:
+            state["tokens"] -= 1.0
+            return True
+        return False
+
+
+def _check_quota(tenant_id, object_size_bytes=0):
+    """Check tenant quota. Returns (allowed, reason)."""
+    with LOCK:
+        for t in TENANTS:
+            if t["id"] == tenant_id:
+                if t["state"] != "active":
+                    return False, "tenant not active"
+                if t["used_gb"] >= t["capacity_gb"]:
+                    return False, "capacity quota exceeded"
+                if t["object_count"] >= t["object_limit"]:
+                    return False, "object count quota exceeded"
+                needed_gb = object_size_bytes / (1024 * 1024 * 1024)
+                if t["used_gb"] + needed_gb > t["capacity_gb"]:
+                    return False, "capacity quota would be exceeded"
+                return True, None
+        return False, "tenant not found"
+
+
+# ---------------------------------------------------------------------------
+# Subsystem: Lifecycle enforcement engine (background thread)
+# ---------------------------------------------------------------------------
+
+class LifecycleEngine(threading.Thread):
+    """Transitions objects between storage classes per bucket lifecycle rules."""
+
+    def __init__(self, interval=30):
+        super().__init__(daemon=True, name="lifecycle-engine")
+        self.interval = interval
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        while not self._stop.wait(self.interval):
+            self._tick()
+
+    def _tick(self):
+        with LOCK:
+            for bucket_name, policy in LIFECYCLE_POLICIES.items():
+                for rule in policy.get("rules", []):
+                    if rule.get("status") != "Enabled":
+                        continue
+                    prefix = rule.get("filter", {}).get("prefix", "")
+                    for trans in rule.get("transitions", []):
+                        days = trans.get("days", 0)
+                        target = trans.get("storage_class")
+                        objs = OBJECTS.get(bucket_name, {})
+                        for key, meta in objs.items():
+                            if not key.startswith(prefix):
+                                continue
+                            if meta["storage_class"] == target:
+                                continue
+                            last_access = meta.get("last_access")
+                            if not last_access:
+                                continue
+                            try:
+                                dt = datetime.fromisoformat(
+                                    last_access.replace("Z", "+00:00"))
+                            except ValueError:
+                                continue
+                            age_days = (datetime.now(timezone.utc) - dt).days
+                            if age_days >= days:
+                                old = meta["storage_class"]
+                                meta["storage_class"] = target
+                                LIFECYCLE_HISTORY.setdefault(bucket_name, []).insert(0, {
+                                    "time": _now_iso(), "bucket": bucket_name,
+                                    "key": key, "action": "transition",
+                                    "from": old, "to": target, "result": "ok",
+                                })
+                                if len(LIFECYCLE_HISTORY[bucket_name]) > 500:
+                                    del LIFECYCLE_HISTORY[bucket_name][500:]
+
+
+_lifecycle_engine = LifecycleEngine()
+_lifecycle_engine.start()
+
+
+# ---------------------------------------------------------------------------
+# Subsystem: Notification delivery (webhook delivery with retry)
+# ---------------------------------------------------------------------------
+
+class NotificationDelivery(threading.Thread):
+    """Delivers bucket notification webhooks with retry and backoff."""
+
+    def __init__(self, interval=10):
+        super().__init__(daemon=True, name="notification-delivery")
+        self.interval = interval
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        while not self._stop.wait(self.interval):
+            self._tick()
+
+    def _tick(self):
+        global NOTIFICATION_QUEUE
+        with LOCK:
+            queue = list(NOTIFICATION_QUEUE)
+            NOTIFICATION_QUEUE = []
+        for item in queue:
+            self._deliver(item)
+
+    def _deliver(self, item):
+        endpoint = item["endpoint"]
+        topic = item["topic"]
+        event = item["event"]
+        payload = {
+            "event": event,
+            "topic": topic,
+            "time": _now_iso(),
+            "bucket": item.get("bucket"),
+            "key": item.get("key"),
+        }
+        attempts = item.get("attempts", 0) + 1
+        success = self._post_webhook(endpoint, payload)
+        record = {
+            "id": item["id"], "time": _now_iso(), "endpoint": endpoint,
+            "topic": topic, "event": event, "attempts": attempts,
+            "state": "delivered" if success else "failed",
+        }
+        with LOCK:
+            NOTIFICATION_HISTORY.insert(0, record)
+            if len(NOTIFICATION_HISTORY) > 1000:
+                del NOTIFICATION_HISTORY[1000:]
+            if not success and attempts < 5:
+                item["attempts"] = attempts
+                item["next_retry"] = time.time() + (60 * attempts)
+                NOTIFICATION_QUEUE.append(item)
+
+    def _post_webhook(self, endpoint, payload):
+        # Demo mode: always succeed (no outbound network in this build)
+        return True
+
+
+_notification_delivery = NotificationDelivery()
+_notification_delivery.start()
+
+
+# ---------------------------------------------------------------------------
+# Subsystem: Cross-zone replication (background sync simulator)
+# ---------------------------------------------------------------------------
+
+class ReplicationEngine(threading.Thread):
+    """Simulates async cross-zone replication and tracks lag."""
+
+    def __init__(self, interval=20):
+        super().__init__(daemon=True, name="replication-engine")
+        self.interval = interval
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        while not self._stop.wait(self.interval):
+            self._tick()
+
+    def _tick(self):
+        with LOCK:
+            for bucket_name, rep in REPLICATION.items():
+                status = rep["status"]
+                lag = status.get("replication_lag_seconds", 0)
+                lag = max(0, lag - 20)
+                status["replication_lag_seconds"] = lag
+                status["last_sync"] = _now_iso()
+                if lag == 0:
+                    status["state"] = "OK"
+                    status["pending_objects"] = 0
+
+
+_replication_engine = ReplicationEngine()
+_replication_engine.start()
+
+
+# ---------------------------------------------------------------------------
+# Subsystem: Global load balancer health checker
+# ---------------------------------------------------------------------------
+
+class GlobalLBHealthChecker(threading.Thread):
+    """Periodically checks primary/secondary zone health and triggers failover."""
+
+    def __init__(self, interval=10):
+        super().__init__(daemon=True, name="global-lb-health")
+        self.interval = interval
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        while not self._stop.wait(self.interval):
+            self._tick()
+
+    def _tick(self):
+        with LOCK:
+            lb = GLOBAL_LB
+            if not lb["enabled"]:
+                return
+            # Simulate health probe: primary stays healthy unless failed over
+            primary_healthy = lb["primary_healthy"] and lb["state"] == "primary_active"
+            secondary_healthy = lb["secondary_healthy"]
+            lb["primary_healthy"] = primary_healthy
+            lb["secondary_healthy"] = secondary_healthy
+
+            if lb["state"] == "primary_active" and not primary_healthy:
+                # Trigger automatic failover
+                lb["state"] = "secondary_active"
+                lb["last_failover"] = _now_iso()
+                lb["failover_count"] += 1
+                _audit("system", "global-lb.failover",
+                       "primary->secondary", "auto")
+            elif lb["state"] == "secondary_active" and primary_healthy:
+                # Auto-failback after recovery
+                lb["state"] = "primary_active"
+                lb["last_failover"] = None
+                _audit("system", "global-lb.failback",
+                       "secondary->primary", "auto")
+
+
+_global_lb_checker = GlobalLBHealthChecker()
+_global_lb_checker.start()
+
+
+# ---------------------------------------------------------------------------
+# Subsystem: Config backup scheduler
+# ---------------------------------------------------------------------------
+
+class ConfigBackupScheduler(threading.Thread):
+    """Creates periodic configuration backups."""
+
+    def __init__(self, interval=60):
+        super().__init__(daemon=True, name="config-backup")
+        self.interval = interval
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        while not self._stop.wait(self.interval):
+            self._tick()
+
+    def _tick(self):
+        with LOCK:
+            backup_id = "backup-" + str(len(CONFIG_BACKUPS) + 1)
+            CONFIG_BACKUPS.insert(0, {
+                "id": backup_id,
+                "time": _now_iso(),
+                "type": "incremental",
+                "size_mb": round(2.5 + len(CONFIG_BACKUPS) * 0.3, 1),
+                "status": "ok",
+                "includes": ["cluster_config", "users", "keys"],
+            })
+            # Enforce retention
+            cutoff = (datetime.now(timezone.utc) -
+                      timedelta(days=CONFIG_BACKUP_RETENTION_DAYS))
+            CONFIG_BACKUPS[:] = [
+                b for b in CONFIG_BACKUPS
+                if datetime.fromisoformat(b["time"].replace("Z", "+00:00")) > cutoff
+            ]
+            if len(CONFIG_BACKUPS) > 50:
+                del CONFIG_BACKUPS[50:]
+
+
+_config_backup_scheduler = ConfigBackupScheduler()
+_config_backup_scheduler.start()
+
+
+# ---------------------------------------------------------------------------
+# Subsystem: Auto-tiering engine
+# ---------------------------------------------------------------------------
+
+class AutoTieringEngine(threading.Thread):
+    """Transitions objects between tiers based on access frequency."""
+
+    def __init__(self, interval=45):
+        super().__init__(daemon=True, name="auto-tiering")
+        self.interval = interval
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        while not self._stop.wait(self.interval):
+            self._tick()
+
+    def _tick(self):
+        with LOCK:
+            for bucket_name, policy in AUTO_TIERING_POLICIES.items():
+                if not policy.get("enabled"):
+                    continue
+                objs = OBJECTS.get(bucket_name, {})
+                transitions = []
+                for key, meta in objs.items():
+                    current = meta["storage_class"]
+                    last_access = meta.get("last_access")
+                    if not last_access:
+                        continue
+                    try:
+                        dt = datetime.fromisoformat(
+                            last_access.replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+                    age_days = (datetime.now(timezone.utc) - dt).days
+                    for rule in policy.get("rules", []):
+                        if current == rule["from"] and age_days >= rule["access_days"]:
+                            target = rule["to"]
+                            meta["storage_class"] = target
+                            transitions.append({
+                                "bucket": bucket_name, "key": key,
+                                "from": current, "to": target,
+                                "reason": "auto-tiering: %d days since access" % age_days,
+                            })
+                            break
+                if transitions:
+                    AUTO_TIERING_RUN_HISTORY.insert(0, {
+                        "time": _now_iso(),
+                        "bucket": bucket_name,
+                        "transitions": transitions,
+                    })
+                    if len(AUTO_TIERING_RUN_HISTORY) > 100:
+                        del AUTO_TIERING_RUN_HISTORY[100:]
+
+
+_auto_tiering_engine = AutoTieringEngine()
+_auto_tiering_engine.start()
+
+
+# ---------------------------------------------------------------------------
+# Subsystem: Security scanner
+# ---------------------------------------------------------------------------
+
+class SecurityScanner(threading.Thread):
+    """Scans buckets and tenants for security issues."""
+
+    def __init__(self, interval=120):
+        super().__init__(daemon=True, name="security-scanner")
+        self.interval = interval
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        while not self._stop.wait(self.interval):
+            self._tick()
+
+    def _tick(self):
+        with LOCK:
+            new_findings = []
+            # Check for buckets without versioning or object lock
+            for b in BUCKETS:
+                if b.get("versioning") != "Enabled":
+                    new_findings.append({
+                        "id": "sec-" + str(len(SECURITY_FINDINGS) + len(new_findings) + 1),
+                        "time": _now_iso(),
+                        "severity": "medium",
+                        "resource": "bucket/" + b["name"],
+                        "issue": "versioning not enabled",
+                        "recommendation": "enable versioning for ransomware protection",
+                        "state": "open",
+                    })
+                if b.get("object_lock") == "Disabled":
+                    new_findings.append({
+                        "id": "sec-" + str(len(SECURITY_FINDINGS) + len(new_findings) + 1),
+                        "time": _now_iso(),
+                        "severity": "low",
+                        "resource": "bucket/" + b["name"],
+                        "issue": "object lock not enabled",
+                        "recommendation": "enable object lock for WORM protection",
+                        "state": "open",
+                    })
+            # Check for keys older than 90 days
+            for k in KEYS:
+                try:
+                    created = datetime.fromisoformat(k["created"])
+                    if (datetime.now(timezone.utc) - created).days > 90:
+                        new_findings.append({
+                            "id": "sec-" + str(len(SECURITY_FINDINGS) + len(new_findings) + 1),
+                            "time": _now_iso(),
+                            "severity": "medium",
+                            "resource": "key/" + k["access_key"],
+                            "issue": "access key older than 90 days without rotation",
+                            "recommendation": "rotate access keys",
+                            "state": "open",
+                        })
+                except ValueError:
+                    pass
+            if new_findings:
+                SECURITY_FINDINGS[:] = [f for f in SECURITY_FINDINGS if f["state"] != "resolved"]
+                SECURITY_FINDINGS[:] = new_findings + SECURITY_FINDINGS
+                if len(SECURITY_FINDINGS) > 200:
+                    del SECURITY_FINDINGS[200:]
+
+
+_security_scanner = SecurityScanner()
+_security_scanner.start()
+
+
+# ---------------------------------------------------------------------------
+# Subsystem: KMS / SSE-KMS
+# ---------------------------------------------------------------------------
+
+def _kms_encrypt(key_id, plaintext):
+    with LOCK:
+        key = KMS_KEYS.get(key_id)
+        if not key or key["state"] != "enabled":
+            return None
+        material = base64.b64decode(key["key_material"])
+        cipher = bytes(b ^ material[i % len(material)]
+                       for i, b in enumerate(plaintext))
+        return base64.b64encode(cipher).decode()
+
+
+def _kms_decrypt(key_id, ciphertext_b64):
+    with LOCK:
+        key = KMS_KEYS.get(key_id)
+        if not key or key["state"] != "enabled":
+            return None
+        material = base64.b64decode(key["key_material"])
+        cipher = base64.b64decode(ciphertext_b64)
+        plain = bytes(b ^ material[i % len(material)]
+                      for i, b in enumerate(cipher))
+        return plain
+
+
+# ---------------------------------------------------------------------------
+# HTTP Handler
+# ---------------------------------------------------------------------------
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "ScaphAPI/1.0"
+
+    def log_message(self, fmt, *args):
+        return
+
+    def _send_json(self, code, data):
+        body = json.dumps(data).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers",
+                         "Content-Type, X-Tenant, Authorization, x-amz-server-side-encryption, x-amz-server-side-encryption-aws-kms-key-id")
+        self.send_header("Access-Control-Allow-Methods",
+                         "GET, POST, PUT, DELETE, OPTIONS")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_file(self, path, content_type):
+        try:
+            with open(path, "rb") as f:
+                body = f.read()
+        except OSError:
+            self.send_error(404, "not found")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        return self.rfile.read(length) if length else b""
+
+    def _parse_json(self):
+        body = self._read_body()
+        try:
+            return json.loads(body) if body else {}
+        except ValueError:
+            return {}
+
+    def _route(self):
+        path = urlparse(self.path).path
+        return [p for p in path.split("/") if p]
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers",
+                         "Content-Type, X-Tenant, Authorization, x-amz-server-side-encryption, x-amz-server-side-encryption-aws-kms-key-id")
+        self.send_header("Access-Control-Allow-Methods",
+                         "GET, POST, PUT, DELETE, OPTIONS")
+        self.end_headers()
+
+    def do_GET(self):
+        parts = self._route()
+        path = self.path.split("?", 1)[0]
+        query = parse_qs(urlparse(self.path).query)
+
+        # Static files
+        if path == "/" or path == "/index.html":
+            self._send_file(os.path.join(WEB_ROOT, "console", "index.html"),
+                            "text/html")
+            return
+        if path.startswith("/console/") or path.startswith("/billing/") \
+                or path.startswith("/shared/"):
+            rel = path.lstrip("/")
+            if path.endswith("/"):
+                rel = rel + "index.html"
+            self._send_file(os.path.join(WEB_ROOT, rel),
+                            "text/html" if rel.endswith(".html") else
+                            "text/css" if rel.endswith(".css") else
+                            "application/javascript" if rel.endswith(".js")
+                            else "text/plain")
+            return
+        if path == "/api/openapi.json":
+            self._send_json(200, OPENAPI)
+            return
+
+        tenant = _tenant_from_headers(self.headers)
+        if not _rate_limit_allow(tenant):
+            self._send_json(429, {"error": "rate limit exceeded",
+                                   "message": "too many requests"})
+            return
+
+        # Cluster
+        if path == "/api/cluster/health":
+            CLUSTER_HEALTH["updated"] = _now_iso()
+            self._send_json(200, CLUSTER_HEALTH)
+            return
+        if path == "/api/nodes":
+            self._send_json(200, NODES)
+            return
+        if path == "/api/disks":
+            self._send_json(200, DISKS)
+            return
+        if path == "/api/pools":
+            self._send_json(200, POOLS)
+            return
+        if path == "/api/erasure-profiles":
+            self._send_json(200, ERASURE_PROFILES)
+            return
+        if path == "/api/recovery":
+            self._send_json(200, RECOVERY)
+            return
+        if path == "/api/scrubbing":
+            self._send_json(200, SCRUBBING)
+            return
+
+        # Buckets
+        if path == "/api/buckets":
+            self._send_json(200, BUCKETS)
+            return
+        if len(parts) == 3 and parts[0] == "api" and parts[1] == "buckets":
+            bucket_name = parts[2]
+            bucket = next((b for b in BUCKETS if b["name"] == bucket_name), None)
+            if bucket is None:
+                self.send_error(404, "bucket not found")
+                return
+            if query.get("list-objects"):
+                objs = OBJECTS.get(bucket_name, {})
+                rows = [{"key": k, **v} for k, v in objs.items()]
+                self._send_json(200, {"bucket": bucket_name, "objects": rows})
+                return
+            if query.get("legal-hold") and query.get("key"):
+                key = query.get("key")[0]
+                held = OBJECT_LEGAL_HOLD.get((bucket_name, key), False)
+                self._send_json(200, {"bucket": bucket_name, "key": key,
+                                      "legal_hold": held})
+                return
+            if query.get("access-logs"):
+                logs = ACCESS_LOGS.get(bucket_name, [])
+                self._send_json(200, {"logs": logs})
+                return
+            if query.get("website"):
+                self._send_json(200, WEBSITE_CONFIG.get(bucket_name, {}))
+                return
+            self._send_json(200, bucket)
+            return
+
+        # Tenants
+        if path == "/api/tenants":
+            self._send_json(200, TENANTS)
+            return
+        if len(parts) == 3 and parts[0] == "api" and parts[1] == "tenants":
+            tenant_id = parts[2]
+            tenant = next((t for t in TENANTS if t["id"] == tenant_id), None)
+            if tenant is None:
+                self.send_error(404, "tenant not found")
+                return
+            self._send_json(200, tenant)
+            return
+        if path == "/api/users":
+            self._send_json(200, USERS)
+            return
+        if path == "/api/keys":
+            tenant = _tenant_from_headers(self.headers)
+            keys = [k for k in KEYS if k["tenant"] == tenant]
+            self._send_json(200, keys)
+            return
+        if path == "/api/audit-log":
+            limit = int(query.get("limit", [50])[0])
+            self._send_json(200, AUDIT_LOG[:limit])
+            return
+        if path == "/api/invoices":
+            self._send_json(200, INVOICES)
+            return
+        if path == "/api/usage":
+            tenant = _tenant_from_headers(self.headers)
+            if tenant:
+                self._send_json(200, USAGE.get(tenant, USAGE[list(USAGE)[0]]))
+                return
+            self._send_json(200, USAGE)
+            return
+        if path == "/api/me":
+            self._send_json(200, {"tenant": "tenant-a",
+                                  "user": "admin@example.com"})
+            return
+
+        # Lifecycle
+        if path == "/api/lifecycle/history":
+            self._send_json(200, LIFECYCLE_HISTORY)
+            return
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "buckets" \
+                and parts[3] == "lifecycle":
+            bucket_name = parts[2]
+            bucket = next((b for b in BUCKETS if b["name"] == bucket_name), None)
+            if bucket is None:
+                self.send_error(404, "bucket not found")
+                return
+            pol = LIFECYCLE_POLICIES.get(bucket_name, {"rules": []})
+            self._send_json(200, pol)
+            return
+
+        # Notifications
+        if path == "/api/notifications/history":
+            limit = int(query.get("limit", [50])[0])
+            self._send_json(200, NOTIFICATION_HISTORY[:limit])
+            return
+
+        # KMS
+        if path == "/api/kms/keys":
+            keys_out = [{k: v for k, v in key.items() if k != "key_material"}
+                        for key in KMS_KEYS.values()]
+            self._send_json(200, keys_out)
+            return
+        if len(parts) == 5 and parts[0] == "api" and parts[1] == "kms" \
+                and parts[2] == "keys":
+            key_id = parts[3]
+            sub = parts[4]
+            key = KMS_KEYS.get(key_id)
+            if key is None:
+                self.send_error(404, "key not found")
+                return
+            if sub == "enable":
+                key["state"] = "enabled"
+                self._send_json(200, {"status": "ok", "state": "enabled"})
+                return
+            if sub == "disable":
+                key["state"] = "disabled"
+                self._send_json(200, {"status": "ok", "state": "disabled"})
+                return
+            if sub == "rotate":
+                key["key_material"] = base64.b64encode(os.urandom(32)).decode()
+                key["created"] = _now_iso()
+                self._send_json(200, {"status": "ok", "rotated": True})
+                return
+
+        # Replication
+        if path == "/api/replication":
+            self._send_json(200, REPLICATION)
+            return
+
+        # DR
+        if path == "/api/dr":
+            self._send_json(200, DR_STATE)
+            return
+
+        # Cost optimization
+        if path == "/api/cost/recommendations":
+            recs = []
+            for bucket_name, objs in OBJECTS.items():
+                for key, meta in objs.items():
+                    current = meta["storage_class"]
+                    last_access = meta.get("last_access")
+                    if not last_access:
+                        continue
+                    try:
+                        dt = datetime.fromisoformat(last_access.replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+                    age_days = (datetime.now(timezone.utc) - dt).days
+                    if current == "STANDARD" and age_days > 30:
+                        recs.append({
+                            "bucket": bucket_name, "key": key,
+                            "current_class": current,
+                            "recommended_class": "STANDARD_IA",
+                            "reason": "Not accessed for %d days" % age_days,
+                            "estimated_savings_percent": 45,
+                        })
+                    elif current == "STANDARD_IA" and age_days > 90:
+                        recs.append({
+                            "bucket": bucket_name, "key": key,
+                            "current_class": current,
+                            "recommended_class": "GLACIER",
+                            "reason": "Not accessed for %d days" % age_days,
+                            "estimated_savings_percent": 68,
+                        })
+            self._send_json(200, recs)
+            return
+
+        # Drills
+        if path == "/api/drills":
+            self._send_json(200, DRILLS)
+            return
+
+        # Website
+        if path == "/api/website":
+            self._send_json(200, WEBSITE_CONFIG)
+            return
+
+        # Global load balancer
+        if path == "/api/global-lb":
+            self._send_json(200, GLOBAL_LB)
+            return
+
+        # Config backups
+        if path == "/api/config/backup":
+            self._send_json(200, {
+                "backups": CONFIG_BACKUPS,
+                "schedule": CONFIG_BACKUP_SCHEDULE,
+                "retention_days": CONFIG_BACKUP_RETENTION_DAYS,
+            })
+            return
+        if path == "/api/config/backup/restore":
+            self._send_json(200, {"status": "restore-not-implemented-demo"})
+            return
+
+        # CDN origins
+        if path == "/api/cdn/origins":
+            self._send_json(200, CDN_ORIGINS)
+            return
+
+        # Auto-tiering
+        if path == "/api/auto-tiering":
+            self._send_json(200, {
+                "policies": AUTO_TIERING_POLICIES,
+                "run_history": AUTO_TIERING_RUN_HISTORY[:10],
+            })
+            return
+
+        # Compliance
+        if path == "/api/compliance/frameworks":
+            self._send_json(200, COMPLIANCE_FRAMEWORKS)
+            return
+        if path == "/api/compliance/reports":
+            self._send_json(200, COMPLIANCE_REPORTS)
+            return
+
+        # Security
+        if path == "/api/security/findings":
+            self._send_json(200, SECURITY_FINDINGS)
+            return
+
+        # Bucket quarantine
+        if path == "/api/quarantine":
+            self._send_json(200, BUCKET_QUARANTINE)
+            return
+
+        # Network policies
+        if path == "/api/network/policies":
+            self._send_json(200, NETWORK_POLICIES)
+            return
+
+        # Emergency lock
+        if path == "/api/emergency/lock":
+            self._send_json(200, EMERGENCY_LOCK)
+            return
+
+        # Egress optimizer
+        if path == "/api/egress/optimizer":
+            self._send_json(200, EGRESS_CACHE_HINTS)
+            return
+
+        self.send_error(404, "not found")
+
+    def do_POST(self):
+        try:
+            self._do_post_impl()
+        except Exception as e:
+            try:
+                self._send_json(500, {"error": "internal error",
+                                       "message": str(e)})
+            except Exception:
+                pass
+
+    def _do_post_impl(self):
+        parts = self._route()
+        path = self.path.split("?", 1)[0]
+        self._raw_body = self._read_body()
+        payload = json.loads(self._raw_body) if self._raw_body else {}
+        tenant = _tenant_from_headers(self.headers)
+
+        if not _rate_limit_allow(tenant):
+            self._send_json(429, {"error": "rate limit exceeded",
+                                   "message": "too many requests"})
+            return
+
+        # Presigned URL
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "buckets":
+            bucket_name = parts[2]
+            sub = parts[3]
+            bucket = next((b for b in BUCKETS if b["name"] == bucket_name), None)
+            if bucket is None:
+                self.send_error(404, "bucket not found")
+                return
+            actor = payload.get("actor", "admin@example.com")
+
+            if sub == "lifecycle":
+                LIFECYCLE_POLICIES[bucket_name] = payload
+                _audit(actor, "bucket.lifecycle.put", bucket_name)
+                self._send_json(200, {"status": "ok"})
+                return
+            if sub == "notifications":
+                BUCKET_NOTIFICATIONS[bucket_name] = payload
+                _audit(actor, "bucket.notification.put", bucket_name)
+                self._send_json(200, {"status": "ok"})
+                return
+            if sub == "presigned-url":
+                key = payload.get("key", "object")
+                method = payload.get("method", "GET")
+                expiry = int(payload.get("expiry", 3600))
+                token = hashlib.sha256(
+                    (bucket_name + key + str(expiry) + SECRET).encode()
+                ).hexdigest()[:32]
+                url = ("https://{bucket}.scaph.example.com/{key}"
+                       "?X-Scaph-Token={token}".format(
+                           bucket=bucket_name, key=key, token=token))
+                with GRANTS_LOCK:
+                    PRESIGNED_GRANTS[token] = {
+                        "bucket": bucket_name, "key": key,
+                        "method": method,
+                        "expires_at": (
+                            datetime.now(timezone.utc) +
+                            timedelta(seconds=expiry)).strftime(
+                                "%Y-%m-%dT%H:%M:%SZ"),
+                    }
+                _audit(actor, "bucket.presigned-url",
+                       bucket_name + "/" + key)
+                self._send_json(200, {
+                    "url": url, "method": method, "expires_in": expiry,
+                    "token": token,
+                })
+                return
+            if sub == "website":
+                WEBSITE_CONFIG[bucket_name] = payload
+                _audit(actor, "bucket.website.put", bucket_name)
+                self._send_json(200, {"status": "ok"})
+                return
+            if sub == "legal-hold":
+                key = payload.get("key")
+                enabled = bool(payload.get("enabled", True))
+                if key:
+                    OBJECT_LEGAL_HOLD[(bucket_name, key)] = enabled
+                else:
+                    bucket["legal_hold"] = enabled
+                _audit(actor, "bucket.legal-hold", bucket_name + "/" + str(key))
+                self._send_json(200, {"status": "ok", "legal_hold": enabled})
+                return
+
+        # Object put (with quota enforcement and SSE-KMS)
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "objects":
+            bucket_name = parts[2]
+            key = parts[3]
+            bucket = next((b for b in BUCKETS if b["name"] == bucket_name), None)
+            if bucket is None:
+                self.send_error(404, "bucket not found")
+                return
+            object_size = int(self.headers.get("Content-Length", 0))
+            allowed, reason = _check_quota(tenant, object_size)
+            if not allowed:
+                _audit(tenant, "object.put", bucket_name + "/" + key,
+                       "rejected: " + reason)
+                self._send_json(403, {"error": "quota exceeded",
+                                       "message": reason})
+                return
+            kms_key_id = self.headers.get("x-amz-server-side-encryption-aws-kms-key-id")
+            sse_kms = self.headers.get("x-amz-server-side-encryption")
+            body = self._raw_body
+            if sse_kms == "aws:kms" and kms_key_id:
+                cipher = _kms_encrypt(kms_key_id, body)
+                if cipher is None:
+                    self._send_json(400, {"error": "kms key unavailable"})
+                    return
+                with LOCK:
+                    KMS_ENCRYPTED[(bucket_name, key)] = {
+                        "key_id": kms_key_id, "ciphertext_b64": cipher,
+                        "size": len(body),
+                    }
+                OBJECTS.setdefault(bucket_name, {})[key] = {
+                    "storage_class": bucket["storage_class"],
+                    "size": len(body),
+                    "last_access": _now_iso(),
+                    "versions": 1, "legal_hold": False,
+                    "sse_kms": True,
+                }
+                for t in TENANTS:
+                    if t["id"] == bucket["tenant"]:
+                        t["used_gb"] = round(
+                            t["used_gb"] + len(body) / (1024 * 1024 * 1024), 4)
+                        t["object_count"] += 1
+                _audit(tenant, "object.put", bucket_name + "/" + key,
+                       "ok (sse-kms)")
+                self._enqueue_notification(bucket_name, key,
+                                           "s3:ObjectCreated:Put")
+                self._send_json(200, {"status": "ok", "encrypted": True,
+                                      "key_id": kms_key_id})
+                return
+            else:
+                OBJECTS.setdefault(bucket_name, {})[key] = {
+                    "storage_class": bucket["storage_class"],
+                    "size": len(body),
+                    "last_access": _now_iso(),
+                    "versions": 1, "legal_hold": False,
+                    "sse_kms": False,
+                }
+                for t in TENANTS:
+                    if t["id"] == bucket["tenant"]:
+                        t["used_gb"] = round(
+                            t["used_gb"] + len(body) / (1024 * 1024 * 1024), 4)
+                        t["object_count"] += 1
+                _audit(tenant, "object.put", bucket_name + "/" + key, "ok")
+                self._enqueue_notification(bucket_name, key,
+                                           "s3:ObjectCreated:Put")
+                self._send_json(200, {"status": "ok", "encrypted": False})
+                return
+
+        # Tenants
+        if path == "/admin/tenants":
+            new_tenant = {
+                "id": "tenant-" + str(len(TENANTS) + 1),
+                "name": payload.get("name", "new tenant"),
+                "plan": payload.get("plan", "standard"),
+                "capacity_gb": payload.get("capacity_gb", 1000),
+                "used_gb": 0,
+                "object_count": 0,
+                "object_limit": 10000000,
+                "state": "active",
+                "rate_limit_rps": payload.get("rate_limit_rps", 1000),
+                "created": datetime.utcnow().strftime("%Y-%m-%d"),
+            }
+            TENANTS.append(new_tenant)
+            _audit("admin", "tenant.create", new_tenant["id"])
+            self._send_json(201, new_tenant)
+            return
+
+        # Keys
+        if path == "/admin/keys":
+            new_key = {
+                "id": "key-" + str(len(KEYS) + 1),
+                "tenant": payload.get("tenant", "tenant-a"),
+                "user": payload.get("user", "admin@example.com"),
+                "access_key": "SCAPH01" + "".join(
+                    str((i * 7) % 10) for i in range(15)),
+                "secret_key": "****",
+                "created": datetime.utcnow().strftime("%Y-%m-%d"),
+                "state": "active",
+            }
+            KEYS.append(new_key)
+            _audit("admin", "key.create", new_key["access_key"])
+            self._send_json(201, new_key)
+            return
+
+        # KMS key create
+        if path == "/admin/kms/keys":
+            key_id = "key-" + str(uuid.uuid4())[:8]
+            new_key = {
+                "id": key_id, "name": payload.get("name", "new-key"),
+                "state": "enabled",
+                "created": _now_iso(),
+                "description": payload.get("description", ""),
+                "key_material": base64.b64encode(os.urandom(32)).decode(),
+            }
+            KMS_KEYS[key_id] = new_key
+            _audit("admin", "kms.key.create", key_id)
+            out = {k: v for k, v in new_key.items() if k != "key_material"}
+            self._send_json(201, out)
+            return
+
+        # KMS encrypt/decrypt
+        if path == "/api/kms/encrypt":
+            key_id = payload.get("key_id")
+            plaintext = base64.b64decode(payload.get("plaintext_b64", ""))
+            cipher = _kms_encrypt(key_id, plaintext)
+            if cipher is None:
+                self._send_json(400, {"error": "kms key unavailable"})
+                return
+            self._send_json(200, {"ciphertext_b64": cipher, "key_id": key_id})
+            return
+        if path == "/api/kms/decrypt":
+            key_id = payload.get("key_id")
+            ciphertext = _kms_decrypt(key_id, payload.get("ciphertext_b64", ""))
+            if ciphertext is None:
+                self._send_json(400, {"error": "kms key unavailable"})
+                return
+            self._send_json(200, {
+                "plaintext_b64": base64.b64encode(ciphertext).decode(),
+                "key_id": key_id,
+            })
+            return
+
+        # Replication config
+        if len(parts) == 3 and parts[0] == "api" and parts[1] == "replication":
+            bucket_name = parts[2]
+            bucket = next((b for b in BUCKETS if b["name"] == bucket_name), None)
+            if bucket is None:
+                self.send_error(404, "bucket not found")
+                return
+            REPLICATION[bucket_name] = {"config": payload, "status": {
+                "state": "OK", "last_sync": _now_iso(),
+                "pending_objects": 0, "failed_objects": 0,
+                "replication_lag_seconds": 0,
+            }}
+            _audit(tenant, "bucket.replication.put", bucket_name)
+            self._send_json(200, {"status": "ok"})
+            return
+
+        # Replication (simple path)
+        if path == "/api/replication":
+            src = payload.get("source_bucket", "tenant-a-backups")
+            dst = payload.get("dest_bucket", "tenant-b-media")
+            rule_id = payload.get("rule_id", "rep-1")
+            REPLICATION[src] = {"config": {"source_bucket": src,
+                "dest_bucket": dst, "rule_id": rule_id}, "status": {
+                "state": "OK", "last_sync": _now_iso(),
+                "pending_objects": 0, "failed_objects": 0,
+                "replication_lag_seconds": 0}}
+            _audit(tenant, "bucket.replication.put", src)
+            self._send_json(200, {"status": "ok"})
+            return
+
+        # DR failover / failback
+        if path == "/api/dr/failover":
+            DR_STATE["state"] = "secondary_active"
+            DR_STATE["last_failover"] = _now_iso()
+            _audit("admin", "dr.failover", DR_STATE["secondary_zone"])
+            self._send_json(200, DR_STATE)
+            return
+        if path == "/api/dr/failback":
+            DR_STATE["state"] = "primary_active"
+            DR_STATE["last_failover"] = None
+            DR_STATE["failback_in_progress"] = True
+            _audit("admin", "dr.failback", DR_STATE["primary_zone"])
+            self._send_json(200, DR_STATE)
+            return
+
+        # Ransomware drill
+        if path == "/api/drills/run":
+            drill = {
+                "id": "drill-" + str(len(DRILLS) + 1),
+                "time": _now_iso(),
+                "type": "ransomware_recovery",
+                "rpo_minutes": DR_STATE["rpo_minutes"],
+                "rto_minutes": DR_STATE["rto_minutes"],
+                "state": "completed",
+                "result": "pass",
+                "objects_verified": sum(len(o) for o in OBJECTS.values()),
+                "immutable_objects": sum(1 for o in OBJECTS.values()
+                                         for m in o.values()
+                                         if m.get("legal_hold")),
+            }
+            DRILLS.insert(0, drill)
+            _audit("admin", "drill.run", drill["id"])
+            self._send_json(201, drill)
+            return
+
+        # Global LB manual failover
+        if path == "/api/global-lb/failover":
+            target = payload.get("target", "secondary")
+            with LOCK:
+                if target == "secondary":
+                    GLOBAL_LB["state"] = "secondary_active"
+                    GLOBAL_LB["last_failover"] = _now_iso()
+                    GLOBAL_LB["failover_count"] += 1
+                else:
+                    GLOBAL_LB["state"] = "primary_active"
+                    GLOBAL_LB["last_failover"] = None
+                _audit(tenant, "global-lb.failover.manual",
+                       "target=" + target)
+            self._send_json(200, GLOBAL_LB)
+            return
+
+        # Config backup create
+        if path == "/api/config/backup/create":
+            with LOCK:
+                backup_id = "backup-" + str(len(CONFIG_BACKUPS) + 1)
+                CONFIG_BACKUPS.insert(0, {
+                    "id": backup_id,
+                    "time": _now_iso(),
+                    "type": "manual",
+                    "size_mb": round(10.0 + len(CONFIG_BACKUPS) * 0.5, 1),
+                    "status": "ok",
+                    "includes": ["cluster_config", "users", "keys",
+                                 "bucket_index", "policies"],
+                })
+                _audit(tenant, "config.backup.create", backup_id)
+            self._send_json(201, {"id": backup_id, "status": "ok"})
+            return
+
+        # CDN origin
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "cdn" \
+                and parts[2] == "origins":
+            bucket_name = parts[3]
+            bucket = next((b for b in BUCKETS if b["name"] == bucket_name), None)
+            if bucket is None:
+                self.send_error(404, "bucket not found")
+                return
+            CDN_ORIGINS[bucket_name] = {
+                "origin_id": "cdn-" + str(len(CDN_ORIGINS) + 1),
+                "domain": "cdn-" + bucket_name + ".scaph.example.com",
+                "origin_protocol_policy": payload.get(
+                    "origin_protocol_policy", "https-only"),
+                "default_ttl_seconds": int(payload.get(
+                    "default_ttl_seconds", 86400)),
+                "state": "Enabled",
+            }
+            _audit(tenant, "cdn.origin.create", bucket_name)
+            self._send_json(201, CDN_ORIGINS[bucket_name])
+            return
+
+        # Auto-tiering policy
+        if len(parts) == 3 and parts[0] == "api" and parts[1] == "auto-tiering":
+            bucket_name = parts[2]
+            bucket = next((b for b in BUCKETS if b["name"] == bucket_name), None)
+            if bucket is None:
+                self.send_error(404, "bucket not found")
+                return
+            enabled = bool(payload.get("enabled", True))
+            rules = payload.get("rules", [])
+            AUTO_TIERING_POLICIES[bucket_name] = {
+                "enabled": enabled, "rules": rules,
+            }
+            _audit(tenant, "auto-tiering.put", bucket_name)
+            self._send_json(200, {"status": "ok", "enabled": enabled})
+            return
+
+        # Compliance report generate
+        if path == "/api/compliance/reports/generate":
+            framework = payload.get("framework", "SOC2")
+            report = {
+                "id": "comp-" + str(len(COMPLIANCE_REPORTS) + 1),
+                "time": _now_iso(),
+                "framework": framework,
+                "status": "generated",
+                "findings": 0,
+                "bucket_count": len(BUCKETS),
+                "tenant_count": len(TENANTS),
+            }
+            COMPLIANCE_REPORTS.insert(0, report)
+            if len(COMPLIANCE_REPORTS) > 50:
+                del COMPLIANCE_REPORTS[50:]
+            _audit(tenant, "compliance.report.generate", framework)
+            self._send_json(201, report)
+            return
+
+        # Security scan run
+        if path == "/api/security/scan/run":
+            findings_count = len(SECURITY_FINDINGS)
+            _audit(tenant, "security.scan.run", "full")
+            self._send_json(200, {
+                "status": "completed",
+                "findings": findings_count,
+                "scanned_buckets": len(BUCKETS),
+                "scanned_tenants": len(TENANTS),
+            })
+            return
+
+        # Security finding resolve
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "security" \
+                and parts[2] == "findings":
+            finding_id = parts[3]
+            with LOCK:
+                for f in SECURITY_FINDINGS:
+                    if f["id"] == finding_id:
+                        f["state"] = payload.get("state", "resolved")
+                        _audit(tenant, "security.finding.resolve", finding_id)
+                        self._send_json(200, {"status": "ok", "state": f["state"]})
+                        return
+            self.send_error(404, "finding not found")
+            return
+
+        # Bucket quarantine
+        if len(parts) == 3 and parts[0] == "api" and parts[1] == "quarantine":
+            bucket_name = parts[2]
+            bucket = next((b for b in BUCKETS if b["name"] == bucket_name), None)
+            if bucket is None:
+                self.send_error(404, "bucket not found")
+                return
+            action = payload.get("action", "quarantine")
+            if action == "quarantine":
+                BUCKET_QUARANTINE[bucket_name] = {
+                    "reason": payload.get("reason", "suspicious activity"),
+                    "quarantined_at": _now_iso(),
+                    "quarantined_by": tenant,
+                }
+                bucket["quarantined"] = True
+            else:
+                BUCKET_QUARANTINE.pop(bucket_name, None)
+                bucket["quarantined"] = False
+            _audit(tenant, "bucket.quarantine." + action, bucket_name)
+            self._send_json(200, {"status": "ok", "action": action})
+            return
+
+        # Network policies
+        if path == "/api/network/policies":
+            tenant_id = payload.get("tenant_id")
+            if not tenant_id:
+                self._send_json(400, {"error": "tenant_id required"})
+                return
+            NETWORK_POLICIES[tenant_id] = {
+                "allow_list": payload.get("allow_list", []),
+                "block_list": payload.get("block_list", []),
+                "state": payload.get("state", "Enabled"),
+            }
+            _audit(tenant, "network.policy.put", tenant_id)
+            self._send_json(200, {"status": "ok"})
+            return
+
+        # Emergency lock
+        if path == "/api/emergency/lock":
+            action = payload.get("action", "lock")
+            with LOCK:
+                if action == "lock":
+                    EMERGENCY_LOCK["cluster_locked"] = True
+                    EMERGENCY_LOCK["locked_by"] = tenant
+                    EMERGENCY_LOCK["locked_at"] = _now_iso()
+                    EMERGENCY_LOCK["reason"] = payload.get("reason", "emergency")
+                elif action == "unlock":
+                    EMERGENCY_LOCK["cluster_locked"] = False
+                    EMERGENCY_LOCK["locked_by"] = None
+                    EMERGENCY_LOCK["locked_at"] = None
+                    EMERGENCY_LOCK["reason"] = None
+                _audit(tenant, "emergency.lock." + action, "cluster")
+            self._send_json(200, EMERGENCY_LOCK)
+            return
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "emergency" \
+                and parts[2] == "lock":
+            bucket_name = parts[3]
+            bucket = next((b for b in BUCKETS if b["name"] == bucket_name), None)
+            if bucket is None:
+                self.send_error(404, "bucket not found")
+                return
+            action = payload.get("action", "lock")
+            with LOCK:
+                if action == "lock":
+                    EMERGENCY_LOCK["bucket_locks"][bucket_name] = {
+                        "locked_by": tenant,
+                        "locked_at": _now_iso(),
+                        "reason": payload.get("reason", "emergency"),
+                    }
+                    bucket["emergency_locked"] = True
+                else:
+                    EMERGENCY_LOCK["bucket_locks"].pop(bucket_name, None)
+                    bucket["emergency_locked"] = False
+                _audit(tenant, "emergency.lock." + action, bucket_name)
+            self._send_json(200, {"status": "ok", "action": action})
+            return
+
+        # Egress optimizer
+        if path == "/api/egress/optimizer/run":
+            bucket_name = payload.get("bucket")
+            if not bucket_name:
+                self._send_json(400, {"error": "bucket required"})
+                return
+            hints = EGRESS_CACHE_HINTS.get(bucket_name, {})
+            _audit(tenant, "egress.optimizer.run", bucket_name)
+            self._send_json(200, {
+                "bucket": bucket_name,
+                "hot_prefixes": hints.get("hot_prefixes", []),
+                "cold_prefixes": hints.get("cold_prefixes", []),
+                "estimated_savings_percent": hints.get(
+                    "estimated_egress_savings_percent", 0),
+            })
+            return
+
+        self.send_error(404, "not found")
+
+    def do_PUT(self):
+        try:
+            self._do_put_impl()
+        except Exception as e:
+            try:
+                self._send_json(500, {"error": "internal error",
+                                       "message": str(e)})
+            except Exception:
+                pass
+
+    def _do_put_impl(self):
+        parts = self._route()
+        path = self.path.split("?", 1)[0]
+        payload = self._parse_json()
+        actor = payload.get("actor", "admin@example.com")
+        tenant = _tenant_from_headers(self.headers)
+
+        if not _rate_limit_allow(tenant):
+            self._send_json(429, {"error": "rate limit exceeded",
+                                   "message": "too many requests"})
+            return
+
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "buckets":
+            bucket_name = parts[2]
+            sub = parts[3]
+            bucket = next((b for b in BUCKETS if b["name"] == bucket_name), None)
+            if bucket is None:
+                self.send_error(404, "bucket not found")
+                return
+            if sub == "lifecycle":
+                LIFECYCLE_POLICIES[bucket_name] = payload
+                _audit(actor, "bucket.lifecycle.put", bucket_name)
+                self._send_json(200, {"status": "ok"})
+                return
+            if sub == "notifications":
+                BUCKET_NOTIFICATIONS[bucket_name] = payload
+                _audit(actor, "bucket.notification.put", bucket_name)
+                self._send_json(200, {"status": "ok"})
+                return
+            if sub == "versioning":
+                bucket["versioning"] = payload.get("status", "Enabled")
+                _audit(actor, "bucket.versioning.put", bucket_name)
+                self._send_json(200, {"status": "ok",
+                                       "versioning": bucket["versioning"]})
+                return
+            if sub == "object-lock":
+                bucket["object_lock"] = payload.get("mode", "Disabled")
+                _audit(actor, "bucket.object-lock.put", bucket_name)
+                self._send_json(200, {"status": "ok",
+                                       "object_lock": bucket["object_lock"]})
+                return
+
+        # Tenant rate limit / quota
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "tenants":
+            tenant_id = parts[2]
+            sub = parts[3]
+            tenant_obj = next((t for t in TENANTS if t["id"] == tenant_id), None)
+            if tenant_obj is None:
+                self.send_error(404, "tenant not found")
+                return
+            if sub == "rate-limit":
+                rps = int(payload.get("rate_limit_rps", 1000))
+                tenant_obj["rate_limit_rps"] = rps
+                _audit(actor, "tenant.rate-limit", tenant_id,
+                       str(rps) + " rps")
+                self._send_json(200, {"status": "ok",
+                                       "rate_limit_rps": rps})
+                return
+            if sub == "quota":
+                tenant_obj["capacity_gb"] = payload.get(
+                    "capacity_gb", tenant_obj["capacity_gb"])
+                tenant_obj["object_limit"] = payload.get(
+                    "object_limit", tenant_obj["object_limit"])
+                _audit(actor, "tenant.quota.put", tenant_id)
+                self._send_json(200, {"status": "ok",
+                                       "capacity_gb": tenant_obj["capacity_gb"],
+                                       "object_limit": tenant_obj["object_limit"]})
+                return
+
+        # Global LB config
+        if path == "/api/global-lb":
+            GLOBAL_LB["primary_endpoint"] = payload.get(
+                "primary_endpoint", GLOBAL_LB["primary_endpoint"])
+            GLOBAL_LB["secondary_endpoint"] = payload.get(
+                "secondary_endpoint", GLOBAL_LB["secondary_endpoint"])
+            GLOBAL_LB["enabled"] = bool(payload.get(
+                "enabled", GLOBAL_LB["enabled"]))
+            GLOBAL_LB["failover_threshold_seconds"] = int(payload.get(
+                "failover_threshold_seconds",
+                GLOBAL_LB["failover_threshold_seconds"]))
+            _audit(actor, "global-lb.config.put")
+            self._send_json(200, GLOBAL_LB)
+            return
+
+        # Config backup schedule
+        if path == "/api/config/backup/schedule":
+            CONFIG_BACKUP_SCHEDULE = payload.get(
+                "schedule", CONFIG_BACKUP_SCHEDULE)
+            CONFIG_BACKUP_RETENTION_DAYS = int(payload.get(
+                "retention_days", CONFIG_BACKUP_RETENTION_DAYS))
+            _audit(actor, "config.backup.schedule.put")
+            self._send_json(200, {
+                "schedule": CONFIG_BACKUP_SCHEDULE,
+                "retention_days": CONFIG_BACKUP_RETENTION_DAYS,
+            })
+            return
+
+        # Auto-tiering via PUT
+        if len(parts) == 3 and parts[0] == "api" and parts[1] == "auto-tiering":
+            bucket_name = parts[2]
+            bucket = next((b for b in BUCKETS if b["name"] == bucket_name), None)
+            if bucket is None:
+                self.send_error(404, "bucket not found")
+                return
+            enabled = bool(payload.get("enabled", True))
+            rules = payload.get("rules", [])
+            AUTO_TIERING_POLICIES[bucket_name] = {
+                "enabled": enabled, "rules": rules,
+            }
+            _audit(actor, "auto-tiering.put", bucket_name)
+            self._send_json(200, {"status": "ok", "enabled": enabled})
+            return
+
+        # Security finding resolve via PUT
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "security" \
+                and parts[2] == "findings":
+            finding_id = parts[3]
+            with LOCK:
+                for f in SECURITY_FINDINGS:
+                    if f["id"] == finding_id:
+                        f["state"] = payload.get("state", "resolved")
+                        _audit(actor, "security.finding.resolve", finding_id)
+                        self._send_json(200, {"status": "ok", "state": f["state"]})
+                        return
+            self.send_error(404, "finding not found")
+            return
+
+        self.send_error(404, "not found")
+
+    def do_DELETE(self):
+        try:
+            self._do_delete_impl()
+        except Exception as e:
+            try:
+                self._send_json(500, {"error": "internal error",
+                                       "message": str(e)})
+            except Exception:
+                pass
+
+    def _do_delete_impl(self):
+        parts = self._route()
+        path = self.path.split("?", 1)[0]
+
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "buckets":
+            bucket_name = parts[2]
+            sub = parts[3]
+            if sub == "lifecycle":
+                LIFECYCLE_POLICIES.pop(bucket_name, None)
+                self._send_json(200, {"status": "ok"})
+                return
+            if sub == "notifications":
+                BUCKET_NOTIFICATIONS.pop(bucket_name, None)
+                self._send_json(200, {"status": "ok"})
+                return
+
+        # Security finding delete
+        if len(parts) == 5 and parts[0] == "api" and parts[1] == "security" \
+                and parts[2] == "findings":
+            finding_id = parts[3]
+            with LOCK:
+                for i, f in enumerate(SECURITY_FINDINGS):
+                    if f["id"] == finding_id:
+                        del SECURITY_FINDINGS[i]
+                        self._send_json(200, {"status": "ok"})
+                        return
+            self.send_error(404, "finding not found")
+            return
+
+        # Config backup delete
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "config" \
+                and parts[2] == "backup":
+            backup_id = parts[3]
+            with LOCK:
+                for i, b in enumerate(CONFIG_BACKUPS):
+                    if b["id"] == backup_id:
+                        del CONFIG_BACKUPS[i]
+                        self._send_json(200, {"status": "ok"})
+                        return
+            self.send_error(404, "backup not found")
+            return
+
+        self.send_error(404, "not found")
+
+    def _enqueue_notification(self, bucket, key, event):
+        notifs = BUCKET_NOTIFICATIONS.get(bucket)
+        if not notifs:
+            return
+        for wh in notifs.get("webhooks", []):
+            if wh.get("state") != "Enabled":
+                continue
+            NOTIFICATION_QUEUE.append({
+                "id": "notif-" + str(uuid.uuid4())[:8],
+                "bucket": bucket, "key": key, "event": event,
+                "topic": wh.get("topic"), "endpoint": wh.get("endpoint"),
+                "attempts": 0,
+            })
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI specification
+# ---------------------------------------------------------------------------
+
+OPENAPI = {
+    "openapi": "3.0.1",
+    "info": {
+        "title": "Scaph API",
+        "version": "2.0.0",
+        "description": ("S3-compatible object storage admin and billing API. "
+                        "Phase 2 and Phase 3 features included."),
+    },
+    "servers": [{"url": "http://localhost:8080/api"}],
+    "paths": {
+        "/cluster/health": {"get": {"summary": "Cluster health"}},
+        "/nodes": {"get": {"summary": "List cluster nodes"}},
+        "/disks": {"get": {"summary": "List disks"}},
+        "/pools": {"get": {"summary": "List storage pools"}},
+        "/erasure-profiles": {"get": {"summary": "List erasure profiles"}},
+        "/recovery": {"get": {"summary": "Recovery status"}},
+        "/scrubbing": {"get": {"summary": "Data scrubbing status"}},
+        "/buckets": {"get": {"summary": "List buckets"}},
+        "/buckets/{name}": {
+            "get": {"summary": "Get bucket"},
+            "put": {"summary": "Update bucket (versioning, object-lock)"},
+        },
+        "/buckets/{name}/objects": {
+            "get": {"summary": "List objects in bucket"},
+        },
+        "/objects/{bucket}/{key}": {
+            "post": {"summary": "Put object (quota + SSE-KMS enforced)"},
+        },
+        "/buckets/{name}/lifecycle": {
+            "get": {"summary": "Get lifecycle policy"},
+            "put": {"summary": "Set lifecycle policy"},
+            "delete": {"summary": "Delete lifecycle policy"},
+        },
+        "/buckets/{name}/access-logs": {
+            "get": {"summary": "Get server access logs"},
+        },
+        "/buckets/{name}/notifications": {
+            "get": {"summary": "Get bucket notifications"},
+            "put": {"summary": "Set bucket notifications"},
+        },
+        "/buckets/{name}/website": {
+            "post": {"summary": "Set static website config"},
+        },
+        "/buckets/{name}/legal-hold": {
+            "post": {"summary": "Set object legal hold"},
+            "get": {"summary": "Get object legal hold"},
+        },
+        "/buckets/{name}/presigned-url": {
+            "post": {"summary": "Generate presigned URL"},
+        },
+        "/buckets/{name}/replication": {
+            "post": {"summary": "Set cross-zone replication config"},
+        },
+        "/lifecycle/history": {"get": {"summary": "Lifecycle transition history"}},
+        "/notifications/history": {"get": {"summary": "Notification delivery history"}},
+        "/tenants": {"get": {"summary": "List tenants"},
+                     "post": {"summary": "Create tenant"}},
+        "/tenants/{id}": {"get": {"summary": "Get tenant"}},
+        "/tenants/{id}/rate-limit": {
+            "put": {"summary": "Set tenant rate limit"},
+        },
+        "/tenants/{id}/quota": {
+            "put": {"summary": "Set tenant quota"},
+        },
+        "/users": {"get": {"summary": "List users"}},
+        "/keys": {"get": {"summary": "List access keys"},
+                  "post": {"summary": "Create access key"}},
+        "/audit-log": {"get": {"summary": "Audit log"}},
+        "/invoices": {"get": {"summary": "List invoices"}},
+        "/usage": {"get": {"summary": "Usage metering"}},
+        "/me": {"get": {"summary": "Current user"}},
+        "/kms/keys": {"get": {"summary": "List KMS keys"},
+                      "post": {"summary": "Create KMS key"}},
+        "/kms/keys/{id}": {"get": {"summary": "Get KMS key"}},
+        "/kms/keys/{id}/enable": {"put": {"summary": "Enable KMS key"}},
+        "/kms/keys/{id}/disable": {"put": {"summary": "Disable KMS key"}},
+        "/kms/keys/{id}/rotate": {"put": {"summary": "Rotate KMS key"}},
+        "/kms/encrypt": {"post": {"summary": "Encrypt with KMS key"}},
+        "/kms/decrypt": {"post": {"summary": "Decrypt with KMS key"}},
+        "/replication": {"get": {"summary": "Replication status"}},
+        "/dr": {"get": {"summary": "DR state"}},
+        "/dr/failover": {"post": {"summary": "Failover to secondary"}},
+        "/dr/failback": {"post": {"summary": "Failback to primary"}},
+        "/drills": {"get": {"summary": "List recovery drills"}},
+        "/drills/run": {"post": {"summary": "Run ransomware recovery drill"}},
+        "/cost/recommendations": {"get": {"summary": "Cost optimization recommendations"}},
+        "/website": {"get": {"summary": "Website configs"}},
+        "/global-lb": {"get": {"summary": "Global load balancer state"},
+                       "put": {"summary": "Update global LB config"}},
+        "/global-lb/failover": {"post": {"summary": "Manual global LB failover"}},
+        "/config/backup": {"get": {"summary": "List config backups"}},
+        "/config/backup/create": {"post": {"summary": "Create config backup"}},
+        "/config/backup/{id}": {"delete": {"summary": "Delete config backup"}},
+        "/config/backup/schedule": {"put": {"summary": "Set backup schedule"}},
+        "/cdn/origins": {"get": {"summary": "List CDN origins"},
+                         "post": {"summary": "Create CDN origin"}},
+        "/auto-tiering": {"get": {"summary": "Auto-tiering policies"}},
+        "/auto-tiering/{bucket}": {
+            "put": {"summary": "Set auto-tiering policy"},
+        },
+        "/compliance/frameworks": {"get": {"summary": "Compliance frameworks"}},
+        "/compliance/reports": {"get": {"summary": "List compliance reports"}},
+        "/compliance/reports/generate": {
+            "post": {"summary": "Generate compliance report"},
+        },
+        "/security/findings": {"get": {"summary": "Security findings"}},
+        "/security/findings/{id}": {
+            "delete": {"summary": "Delete security finding"},
+            "put": {"summary": "Resolve security finding"},
+        },
+        "/security/scan/run": {"post": {"summary": "Run security scan"}},
+        "/quarantine": {"get": {"summary": "Quarantined buckets"}},
+        "/quarantine/{bucket}": {"post": {"summary": "Quarantine or release bucket"}},
+        "/network/policies": {"get": {"summary": "Network policies"},
+                              "post": {"summary": "Set network policy"}},
+        "/emergency/lock": {"get": {"summary": "Emergency lock state"},
+                            "post": {"summary": "Lock or unlock cluster"}},
+        "/emergency/lock/{bucket}": {"post": {"summary": "Lock or unlock bucket"}},
+        "/egress/optimizer/run": {"post": {"summary": "Run egress optimizer"}},
+    },
+}
+
+
+def main():
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    print("Scaph API server listening on port %d" % PORT)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        _lifecycle_engine.stop()
+        _notification_delivery.stop()
+        _replication_engine.stop()
+        _global_lb_checker.stop()
+        _config_backup_scheduler.stop()
+        _auto_tiering_engine.stop()
+        _security_scanner.stop()
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

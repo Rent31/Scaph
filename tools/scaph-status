@@ -1,0 +1,39 @@
+#!/bin/bash
+#
+# scaph-status - print Scaph cluster health.
+#
+# Queries the monitor map, OSD map, placement groups, and the Scaph API
+# health endpoint. Run on any node in the cluster.
+
+set -euo pipefail
+
+CONF="${CEPH_CONF:-/etc/scaph/ceph.conf}"
+API_PORT="${SCAPH_API_PORT:-8080}"
+
+ok() { echo "[ok] $*"; }
+err() { echo "[err] $*" >&2; }
+
+if [ -f "$CONF" ]; then
+  CEPH_ARGS="--conf $CONF"
+else
+  CEPH_ARGS=""
+fi
+
+echo "== cluster health =="
+ceph $CEPH_ARGS health || err "ceph health query failed"
+
+echo "== mon map =="
+ceph $CEPH_ARGS mon stat || err "mon stat failed"
+
+echo "== osd map =="
+ceph $CEPH_ARGS osd stat || err "osd stat failed"
+
+echo "== placement groups =="
+ceph $CEPH_ARGS pg stat || err "pg stat failed"
+
+echo "== scaph api =="
+if curl -sf "http://127.0.0.1:$API_PORT/api/cluster/health" > /dev/null 2>&1; then
+  ok "API server reachable on port $API_PORT"
+else
+  err "API server not reachable on port $API_PORT (start web/scaph-api)"
+fi

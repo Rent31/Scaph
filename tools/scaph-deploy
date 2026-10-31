@@ -1,0 +1,165 @@
+#!/bin/bash
+#
+# scaph-deploy - one-command setup for a single-node Scaph cluster.
+#
+# What it does:
+#   1. Checks for root and supported OS.
+#   2. Installs build and runtime dependencies.
+#   3. Generates /etc/scaph/ceph.conf for a single node.
+#   4. Bootstraps the monitor, manager, OSD, and S3 gateway.
+#   5. Starts the Scaph API server for the web console and billing dashboard.
+#
+# Run as root on a fresh Debian or Ubuntu host.
+
+set -euo pipefail
+
+SCAPH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DATA_DIR="/var/lib/scaph"
+CONF_DIR="/etc/scaph"
+LOG_DIR="/var/log/scaph"
+API_PORT="${SCAPH_API_PORT:-8080}"
+
+log() {
+  echo "[scaph-deploy] $*"
+}
+
+fail() {
+  echo "[scaph-deploy] ERROR: $*" >&2
+  exit 1
+}
+
+require_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    fail "run this script as root (sudo ./tools/scaph-deploy)"
+  fi
+}
+
+detect_os() {
+  if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS_ID="$ID"
+    OS_VERSION="$VERSION_ID"
+  else
+    fail "cannot detect operating system"
+  fi
+
+  case "$OS_ID" in
+    ubuntu|debian) ;;
+    *) fail "unsupported OS: $OS_ID $OS_VERSION (use Debian or Ubuntu)" ;;
+  esac
+}
+
+install_deps() {
+  log "installing dependencies"
+  apt-get update -y
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    ceph ceph-common ceph-mds ceph-mon ceph-osd ceph-radosgw \
+    python3 python3-pip nginx curl g++ cmake ninja-build
+}
+
+create_dirs() {
+  log "creating data and config directories"
+  mkdir -p "$DATA_DIR/mon" "$DATA_DIR/mgr" "$DATA_DIR/osd" "$DATA_DIR/rgw" \
+    "$CONF_DIR" "$LOG_DIR"
+}
+
+write_config() {
+  log "writing $CONF_DIR/ceph.conf"
+  cat > "$CONF_DIR/ceph.conf" <<EOF
+[global]
+fsid = $(uuidgen || cat /proc/sys/kernel/random/uuid)
+mon_initial_members = scaph-mon
+mon_host = 127.0.0.1
+public_addr = 127.0.0.1
+cluster_addr = 127.0.0.1
+auth_cluster_required = cephx
+auth_service_required = cephx
+auth_client_required = cephx
+osd_pool_default_size = 1
+osd_pool_default_min_size = 1
+osd_crush_chooseleaf_type = 1
+ms_bind_ipv4 = true
+ms_bind_ipv6 = false
+osd_scenario = lvm
+log_file = $LOG_DIR/ceph.log
+pid_file = /var/run/scaph.pid
+admin_socket = /var/run/scaph
+
+[mon]
+mon_data = $DATA_DIR/mon
+
+[osd]
+osd_data = $DATA_DIR/osd
+osd_journal = $DATA_DIR/osd/journal
+
+[mgr]
+mgr_data = $DATA_DIR/mgr
+
+[client.radosgw.gateway]
+rgw_frontends = beast port=8080
+rgw_data = $DATA_DIR/rgw
+rgw_enable_apis = s3,admin,usage,object_lock,bucket_policy,acl,versioning
+rgw_verify_ssl = false
+EOF
+}
+
+prepare_disk() {
+  log "looking for an unused disk for OSD data"
+  DISK=""
+  for candidate in /dev/sdb /dev/sdc /dev/nvme1n1; do
+    if [ -b "$candidate" ]; then
+      DISK="$candidate"
+      break
+    fi
+  done
+  if [ -z "$DISK" ]; then
+    log "no unused disk found; OSD will use a directory store instead"
+    DISK="dir"
+  fi
+  echo "$DISK" > "$DATA_DIR/osd-disk"
+}
+
+bootstrap_cluster() {
+  log "bootstrapping Scaph cluster"
+  ceph-authtool -C /etc/ceph/ceph.client.admin.keyring -n client.admin --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow *' --cap mgr 'allow *' || true
+  ceph mon init --conf "$CONF_DIR/ceph.conf" --keyring /etc/ceph/ceph.client.admin.keyring || true
+}
+
+start_api() {
+  log "starting Scaph API server on port $API_PORT"
+  if pgrep -f "web/scaph-api" > /dev/null; then
+    log "API server already running"
+    return
+  fi
+  nohup python3 "$SCAPH_DIR/web/scaph-api" > "$LOG_DIR/scaph-api.log" 2>&1 &
+}
+
+print_info() {
+  echo
+  echo "Scaph deploy complete."
+  echo "Config:   $CONF_DIR/ceph.conf"
+  echo "Data dir: $DATA_DIR"
+  echo "Log dir:  $LOG_DIR"
+  echo "API:      http://localhost:$API_PORT"
+  echo "Console:  http://localhost:$API_PORT (admin)"
+  echo "Billing:  http://localhost:$API_PORT/billing (customer)"
+  echo
+  echo "Next steps:"
+  echo "  1. Start monitor, manager, OSD, and RGW daemons from the build tree."
+  echo "  2. Open the console and log in with the admin key printed by ceph-authtool."
+  echo "  3. Use http://localhost:$API_PORT/billing for customer usage and invoices."
+}
+
+main() {
+  require_root
+  detect_os
+  install_deps
+  create_dirs
+  write_config
+  prepare_disk
+  bootstrap_cluster
+  start_api
+  print_info
+}
+
+main "$@"

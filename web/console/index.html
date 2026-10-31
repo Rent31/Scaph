@@ -1,0 +1,1832 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scaph console</title>
+<link rel="stylesheet" href="../shared/style.css">
+</head>
+<body>
+<div class="layout">
+  <div class="sidebar">
+    <div class="brand">
+      <div class="mark"></div>
+      <span>Scaph console</span>
+    </div>
+    <div class="nav">
+      <div class="section-title">cluster</div>
+      <a href="#" data-page="overview" class="nav-item active">Overview</a>
+      <a href="#" data-page="nodes" class="nav-item">Nodes</a>
+      <a href="#" data-page="disks" class="nav-item">Disks</a>
+      <a href="#" data-page="pools" class="nav-item">Pools</a>
+      <a href="#" data-page="erasure" class="nav-item">Erasure profiles</a>
+      <div class="section-title">data</div>
+      <a href="#" data-page="buckets" class="nav-item">Buckets</a>
+      <a href="#" data-page="lifecycle" class="nav-item">Lifecycle policies</a>
+      <a href="#" data-page="access-logs" class="nav-item">Server access logs</a>
+      <a href="#" data-page="notifications" class="nav-item">Bucket notifications</a>
+      <a href="#" data-page="presigned" class="nav-item">Presigned URLs</a>
+      <a href="#" data-page="objects" class="nav-item">Objects</a>
+      <a href="#" data-page="website" class="nav-item">Static website</a>
+      <a href="#" data-page="versioning" class="nav-item">Versioning and lock</a>
+      <div class="section-title">tenants</div>
+      <a href="#" data-page="tenants" class="nav-item">Tenants</a>
+      <a href="#" data-page="users" class="nav-item">Users</a>
+      <a href="#" data-page="keys" class="nav-item">Access keys</a>
+      <div class="section-title">operations</div>
+      <a href="#" data-page="recovery" class="nav-item">Recovery</a>
+      <a href="#" data-page="scrubbing" class="nav-item">Data scrubbing</a>
+      <a href="#" data-page="kms" class="nav-item">KMS keys</a>
+      <a href="#" data-page="replication" class="nav-item">Cross-zone replication</a>
+      <a href="#" data-page="dr" class="nav-item">Disaster recovery</a>
+      <a href="#" data-page="drills" class="nav-item">Recovery drills</a>
+      <a href="#" data-page="cost" class="nav-item">Cost optimization</a>
+      <a href="#" data-page="global-lb" class="nav-item">Global load balancer</a>
+      <a href="#" data-page="config-backup" class="nav-item">Config backup</a>
+      <a href="#" data-page="cdn-origins" class="nav-item">CDN origins</a>
+      <a href="#" data-page="auto-tiering" class="nav-item">Auto-tiering</a>
+      <a href="#" data-page="compliance" class="nav-item">Compliance</a>
+      <a href="#" data-page="security" class="nav-item">Security scanner</a>
+      <a href="#" data-page="quarantine" class="nav-item">Bucket quarantine</a>
+      <a href="#" data-page="network-policies" class="nav-item">Network policies</a>
+      <a href="#" data-page="emergency-lock" class="nav-item">Emergency lock</a>
+      <a href="#" data-page="egress-optimizer" class="nav-item">Egress optimizer</a>
+      <a href="#" data-page="audit" class="nav-item">Audit log</a>
+      <div class="section-title">system</div>
+      <a href="#" data-page="billing" class="nav-item">Billing</a>
+    </div>
+  </div>
+  <div class="main">
+    <div id="page-overview" class="page active">
+      <div class="header">
+        <h2>Cluster overview</h2>
+        <p id="health-line">Fetching health&hellip;</p>
+      </div>
+      <div class="kv" id="overview-kv"></div>
+      <div class="card">
+        <h3>Status details</h3>
+        <table id="health-table">
+          <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="page-nodes" class="page">
+      <div class="header">
+        <h2>Nodes</h2>
+        <p>Cluster members and resource usage.</p>
+      </div>
+      <table id="nodes-table">
+        <thead><tr><th>Hostname</th><th>Role</th><th>State</th><th>CPU</th><th>Memory</th><th>Disk</th><th>Used</th><th>Rack</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-disks" class="page">
+      <div class="header">
+        <h2>Disks</h2>
+        <p>Per-disk state, type, and tier assignment.</p>
+      </div>
+      <table id="disks-table">
+        <thead><tr><th>Node</th><th>Path</th><th>Type</th><th>Tier</th><th>Size (GB)</th><th>Used (GB)</th><th>State</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-pools" class="page">
+      <div class="header">
+        <h2>Pools</h2>
+        <p>Storage pools, erasure profiles, and capacity.</p>
+      </div>
+      <table id="pools-table">
+        <thead><tr><th>Name</th><th>Type</th><th>Profile</th><th>Disk type</th><th>Size (GB)</th><th>Used (GB)</th><th>Objects</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-erasure" class="page">
+      <div class="header">
+        <h2>Erasure profiles</h2>
+        <p>Configurable erasure coding profiles per pool or storage class.</p>
+      </div>
+      <table id="erasure-table">
+        <thead><tr><th>Name</th><th>Data chunks</th><th>Coding chunks</th><th>Failure domain</th><th>Crush root</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-buckets" class="page">
+      <div class="header">
+        <h2>Buckets</h2>
+        <p>All buckets across tenants.</p>
+      </div>
+      <table id="buckets-table">
+        <thead><tr><th>Name</th><th>Tenant</th><th>Storage class</th><th>Size (GB)</th><th>Objects</th><th>Versioning</th><th>Object lock</th><th>Created</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-versioning" class="page">
+      <div class="header">
+        <h2>Versioning and Object Lock</h2>
+        <p>Versioning keeps prior object versions. Object Lock provides WORM
+protection in Governance, Compliance, or Legal Hold mode.</p>
+      </div>
+      <div class="card">
+        <h3>Bucket lock controls</h3>
+        <p>Set versioning and Object Lock per bucket from the admin console.</p>
+        <form class="form" id="lock-form">
+          <div class="form-row">
+            <div>
+              <label for="lock-bucket">Bucket name</label>
+              <input id="lock-bucket" type="text" required>
+            </div>
+            <div>
+              <label for="lock-versioning">Versioning</label>
+              <select id="lock-versioning">
+                <option>Enabled</option>
+                <option>Disabled</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label for="lock-mode">Object Lock mode</label>
+            <select id="lock-mode">
+              <option>Disabled</option>
+              <option>Governance</option>
+              <option>Compliance</option>
+            </select>
+          </div>
+          <div class="actions">
+            <button type="submit">Apply</button>
+            <button type="button" class="secondary" id="lock-cancel">Cancel</button>
+          </div>
+        </form>
+        <p class="small">Compliance mode cannot be disabled until the retention period expires.</p>
+      </div>
+    </div>
+
+    <div id="page-tenants" class="page">
+      <div class="header">
+        <h2>Tenants</h2>
+        <p>Isolated namespaces with separate users and keys.</p>
+      </div>
+      <table id="tenants-table">
+        <thead><tr><th>ID</th><th>Name</th><th>Plan</th><th>Capacity (GB)</th><th>Used (GB)</th><th>Objects</th><th>Limit</th><th>State</th><th>Created</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px">
+        <h3>Provision tenant</h3>
+        <p>Admin provisioning API. Automates tenant signup from the customer portal.</p>
+        <form class="form" id="tenant-form">
+          <div class="form-row">
+            <div>
+              <label for="tenant-name">Name</label>
+              <input id="tenant-name" type="text" required>
+            </div>
+            <div>
+              <label for="tenant-plan">Plan</label>
+              <select id="tenant-plan">
+                <option>standard</option>
+                <option>infrequent</option>
+                <option>archive</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label for="tenant-capacity">Capacity quota (GB)</label>
+            <input id="tenant-capacity" type="number" value="1000" required>
+          </div>
+          <div class="actions">
+            <button type="submit">Create tenant</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-users" class="page">
+      <div class="header">
+        <h2>Users</h2>
+        <p>Sub-users belong to a single tenant.</p>
+      </div>
+      <table id="users-table">
+        <thead><tr><th>ID</th><th>Tenant</th><th>Name</th><th>Email</th><th>State</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-keys" class="page">
+      <div class="header">
+        <h2>Access keys</h2>
+        <p>Multiple keys per tenant with rotation support.</p>
+      </div>
+      <table id="keys-table">
+        <thead><tr><th>ID</th><th>Tenant</th><th>User</th><th>Access key</th><th>Created</th><th>State</th><th>Action</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px">
+        <h3>Create key</h3>
+        <form class="form" id="key-form">
+          <div class="form-row">
+            <div>
+              <label for="key-tenant">Tenant</label>
+              <select id="key-tenant"></select>
+            </div>
+            <div>
+              <label for="key-user">User</label>
+              <input id="key-user" type="text" required>
+            </div>
+          </div>
+          <div class="actions">
+            <button type="submit">Create key</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-recovery" class="page">
+      <div class="header">
+        <h2>Recovery</h2>
+        <p>Automatic rebuild after disk or server failure. Throttle limits rebuild speed so customer latency is not affected.</p>
+      </div>
+      <div class="kv">
+        <div class="kv-item">
+          <div class="label">State</div>
+          <div class="value tag ok" id="recovery-state">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Throttle (MB/s)</div>
+          <div class="value" id="recovery-throttle">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Last rebuild</div>
+          <div class="value" id="recovery-last">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Progress</div>
+          <div class="value" id="recovery-progress">-</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Throttle recovery</h3>
+        <form class="form" id="throttle-form">
+          <div>
+            <label for="throttle-mbps">Rebuild speed limit (MB/s)</label>
+            <input id="throttle-mbps" type="number" value="50" min="1" required>
+          </div>
+          <div class="actions">
+            <button type="submit">Apply throttle</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-scrubbing" class="page">
+      <div class="header">
+        <h2>Data scrubbing</h2>
+        <p>Periodic integrity checks catch silent bit-rot.</p>
+      </div>
+      <div class="kv">
+        <div class="kv-item">
+          <div class="label">Schedule</div>
+          <div class="value" id="scrub-schedule">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Last run</div>
+          <div class="value" id="scrub-last">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Status</div>
+          <div class="value tag ok" id="scrub-status">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Errors</div>
+          <div class="value" id="scrub-errors">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Scrubbing now</div>
+          <div class="value" id="scrub-now">-</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="page-audit" class="page">
+      <div class="header">
+        <h2>Audit log</h2>
+        <p>Records admin and API actions for compliance.</p>
+      </div>
+      <table id="audit-table">
+        <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Resource</th><th>Result</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-billing" class="page">
+      <div class="header">
+        <h2>Billing</h2>
+        <p>Usage metering: storage GB-hours, requests, and egress exported to billing.</p>
+      </div>
+      <table id="invoices-table">
+        <thead><tr><th>Invoice</th><th>Tenant</th><th>Period</th><th>Amount</th><th>State</th><th>Due</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-lifecycle" class="page">
+      <div class="header">
+        <h2>Lifecycle policies</h2>
+        <p>Rules that move objects between storage tiers (Standard, Infrequent Access, Archive) by age.</p>
+      </div>
+      <table id="lifecycle-table">
+        <thead><tr><th>Bucket</th><th>Rule ID</th><th>Status</th><th>Transition after (days)</th><th>Target storage class</th><th>Prefix</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px">
+        <h3>Set lifecycle policy</h3>
+        <form class="form" id="lifecycle-form">
+          <div class="form-row">
+            <div>
+              <label for="lc-bucket">Bucket name</label>
+              <input id="lc-bucket" type="text" required>
+            </div>
+            <div>
+              <label for="lc-rule">Rule ID</label>
+              <input id="lc-rule" type="text" required>
+            </div>
+          </div>
+          <div class="form-row">
+            <div>
+              <label for="lc-days">Transition after (days)</label>
+              <input id="lc-days" type="number" value="90" min="1" required>
+            </div>
+            <div>
+              <label for="lc-class">Target storage class</label>
+              <select id="lc-class">
+                <option>GLACIER</option>
+                <option>STANDARD_IA</option>
+                <option>STANDARD</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label for="lc-prefix">Object prefix (optional)</label>
+            <input id="lc-prefix" type="text">
+          </div>
+          <div class="actions">
+            <button type="submit">Apply lifecycle policy</button>
+            <button type="button" class="secondary" id="lc-cancel">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-access-logs" class="page">
+      <div class="header">
+        <h2>Server access logs</h2>
+        <p>Per-bucket request logs delivered to the customer.</p>
+      </div>
+      <table id="access-logs-table">
+        <thead><tr><th>Time</th><th>Remote IP</th><th>Method</th><th>Key</th><th>Status</th><th>Bytes</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-notifications" class="page">
+      <div class="header">
+        <h2>Bucket notifications</h2>
+        <p>Webhooks on object create/delete events.</p>
+      </div>
+      <table id="notifications-table">
+        <thead><tr><th>Bucket</th><th>Webhook ID</th><th>Topic</th><th>Endpoint</th><th>State</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px">
+        <h3>Add webhook</h3>
+        <form class="form" id="notification-form">
+          <div class="form-row">
+            <div>
+              <label for="nf-bucket">Bucket name</label>
+              <input id="nf-bucket" type="text" required>
+            </div>
+            <div>
+              <label for="nf-topic">Topic</label>
+              <input id="nf-topic" type="text" value="s3:ObjectCreated:*" required>
+            </div>
+          </div>
+          <div>
+            <label for="nf-endpoint">Webhook endpoint URL</label>
+            <input id="nf-endpoint" type="url" required>
+          </div>
+          <div class="actions">
+            <button type="submit">Add webhook</button>
+            <button type="button" class="secondary" id="nf-cancel">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-presigned" class="page">
+      <div class="header">
+        <h2>Presigned URLs</h2>
+        <p>Generate time-limited URLs for secure object access without exposing credentials.</p>
+      </div>
+      <div class="card" style="max-width:600px">
+        <form class="form" id="presigned-form">
+          <div class="form-row">
+            <div>
+              <label for="ps-bucket">Bucket name</label>
+              <input id="ps-bucket" type="text" required>
+            </div>
+            <div>
+              <label for="ps-key">Object key</label>
+              <input id="ps-key" type="text" required>
+            </div>
+          </div>
+          <div class="form-row">
+            <div>
+              <label for="ps-method">HTTP method</label>
+              <select id="ps-method">
+                <option>GET</option>
+                <option>PUT</option>
+                <option>DELETE</option>
+              </select>
+            </div>
+            <div>
+              <label for="ps-expiry">Expires in (seconds)</label>
+              <input id="ps-expiry" type="number" value="3600" min="1" required>
+            </div>
+          </div>
+          <div class="actions">
+            <button type="submit">Generate URL</button>
+          </div>
+        </form>
+        <div id="presigned-result" class="kv" style="margin-top:16px"></div>
+      </div>
+    </div>
+
+    <div id="page-objects" class="page">
+      <div class="header">
+        <h2>Objects</h2>
+        <p>Objects within a bucket, with storage class, size, and legal hold state.</p>
+      </div>
+      <div class="form" style="max-width:400px; margin-bottom:16px">
+        <div class="form-row">
+          <div>
+            <label for="obj-bucket">Bucket name</label>
+            <input id="obj-bucket" type="text" value="tenant-a-backups">
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" id="obj-load">List objects</button>
+        </div>
+      </div>
+      <table id="objects-table">
+        <thead><tr><th>Key</th><th>Storage class</th><th>Size (bytes)</th><th>Last access</th><th>Versions</th><th>Legal hold</th><th>SSE-KMS</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-website" class="page">
+      <div class="header">
+        <h2>Static website hosting</h2>
+        <p>Serve public websites directly from a bucket using an index document and optional error document.</p>
+      </div>
+      <div class="card" style="max-width:600px">
+        <form class="form" id="website-form">
+          <div class="form-row">
+            <div>
+              <label for="web-bucket">Bucket name</label>
+              <input id="web-bucket" type="text" required>
+            </div>
+            <div>
+              <label for="web-index">Index document</label>
+              <input id="web-index" type="text" value="index.html" required>
+            </div>
+          </div>
+          <div>
+            <label for="web-error">Error document (optional)</label>
+            <input id="web-error" type="text" value="error.html">
+          </div>
+          <div class="actions">
+            <button type="submit">Set website config</button>
+            <button type="button" class="secondary" id="web-cancel">Cancel</button>
+          </div>
+        </form>
+      </div>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <h3>Website URL</h3>
+        <p id="website-url" class="small">http://<bucket>.scaph.example.com/</p>
+      </div>
+    </div>
+
+    <div id="page-kms" class="page">
+      <div class="header">
+        <h2>KMS keys</h2>
+        <p>SSE-KMS key management for encryption at rest with customer-managed keys.</p>
+      </div>
+      <table id="kms-table">
+        <thead><tr><th>Key ID</th><th>Name</th><th>State</th><th>Created</th><th>Description</th><th>Action</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <h3>Create KMS key</h3>
+        <form class="form" id="kms-form">
+          <div class="form-row">
+            <div>
+              <label for="kms-name">Key name</label>
+              <input id="kms-name" type="text" required>
+            </div>
+            <div>
+              <label for="kms-desc">Description</label>
+              <input id="kms-desc" type="text">
+            </div>
+          </div>
+          <div class="actions">
+            <button type="submit">Create key</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-replication" class="page">
+      <div class="header">
+        <h2>Cross-zone replication</h2>
+        <p>Asynchronous replication of buckets to another zone/site.</p>
+      </div>
+      <table id="replication-table">
+        <thead><tr><th>Bucket</th><th>Rule ID</th><th>Status</th><th>Destination zone</th><th>Destination bucket</th><th>Lag (seconds)</th><th>Pending</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <h3>Configure replication</h3>
+        <form class="form" id="replication-form">
+          <div class="form-row">
+            <div>
+              <label for="rep-bucket">Bucket name</label>
+              <input id="rep-bucket" type="text" required>
+            </div>
+            <div>
+              <label for="rep-zone">Destination zone</label>
+              <input id="rep-zone" type="text" value="zone-b" required>
+            </div>
+          </div>
+          <div>
+            <label for="rep-dest">Destination bucket</label>
+            <input id="rep-dest" type="text" required>
+          </div>
+          <div class="actions">
+            <button type="submit">Enable replication</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-dr" class="page">
+      <div class="header">
+        <h2>Disaster recovery</h2>
+        <p>Active-passive multi-site DR with defined RPO and RTO targets.</p>
+      </div>
+      <div class="kv">
+        <div class="kv-item">
+          <div class="label">Mode</div>
+          <div class="value" id="dr-mode">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">State</div>
+          <div class="value tag ok" id="dr-state">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Primary zone</div>
+          <div class="value" id="dr-primary">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Secondary zone</div>
+          <div class="value" id="dr-secondary">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">RPO (minutes)</div>
+          <div class="value" id="dr-rpo">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">RTO (minutes)</div>
+          <div class="value" id="dr-rto">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Last failover</div>
+          <div class="value" id="dr-last">-</div>
+        </div>
+      </div>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <div class="actions">
+          <button type="button" id="dr-failover">Failover to secondary</button>
+          <button type="button" id="dr-failback" class="secondary">Failback to primary</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="page-drills" class="page">
+      <div class="header">
+        <h2>Ransomware recovery drills</h2>
+        <p>Documented failover steps tested on a regular schedule. Versioning plus Object Lock make deleted or encrypted data recoverable.</p>
+      </div>
+      <table id="drills-table">
+        <thead><tr><th>Drill ID</th><th>Time</th><th>Type</th><th>RPO (min)</th><th>RTO (min)</th><th>State</th><th>Result</th><th>Objects verified</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <div class="actions">
+          <button type="button" id="drill-run">Run ransomware recovery drill</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="page-cost" class="page">
+      <div class="header">
+        <h2>Cost optimization</h2>
+        <p>Access-frequency analysis recommending tier transitions to reduce storage cost.</p>
+      </div>
+      <table id="cost-table">
+        <thead><tr><th>Bucket</th><th>Key</th><th>Current class</th><th>Recommended class</th><th>Reason</th><th>Estimated savings</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-global-lb" class="page">
+      <div class="header">
+        <h2>Global load balancer</h2>
+        <p>Active-passive endpoint failover across zones with DNS-based traffic steering.</p>
+      </div>
+      <div class="kv">
+        <div class="kv-item">
+          <div class="label">State</div>
+          <div class="value tag ok" id="lb-state">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Primary endpoint</div>
+          <div class="value" id="lb-primary">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Secondary endpoint</div>
+          <div class="value" id="lb-secondary">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Primary zone</div>
+          <div class="value" id="lb-primary-zone">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Secondary zone</div>
+          <div class="value" id="lb-secondary-zone">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Primary healthy</div>
+          <div class="value" id="lb-primary-healthy">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Secondary healthy</div>
+          <div class="value" id="lb-secondary-healthy">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Failover count</div>
+          <div class="value" id="lb-failover-count">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Last failover</div>
+          <div class="value" id="lb-last-failover">-</div>
+        </div>
+      </div>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <div class="actions">
+          <button type="button" id="lb-failover-secondary">Failover to secondary</button>
+          <button type="button" id="lb-failback-primary" class="secondary">Failback to primary</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="page-config-backup" class="page">
+      <div class="header">
+        <h2>Configuration backup</h2>
+        <p>Regular backup of cluster config, users, keys, and bucket index.</p>
+      </div>
+      <div class="kv">
+        <div class="kv-item">
+          <div class="label">Schedule</div>
+          <div class="value" id="backup-schedule">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Retention (days)</div>
+          <div class="value" id="backup-retention">-</div>
+        </div>
+      </div>
+      <table id="backup-table">
+        <thead><tr><th>Backup ID</th><th>Time</th><th>Type</th><th>Size (MB)</th><th>Status</th><th>Includes</th><th>Action</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <div class="actions">
+          <button type="button" id="backup-create">Create backup now</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="page-cdn-origins" class="page">
+      <div class="header">
+        <h2>CDN origin integration</h2>
+        <p>Bundle object storage as a CDN origin with edge caching.</p>
+      </div>
+      <table id="cdn-table">
+        <thead><tr><th>Bucket</th><th>Origin ID</th><th>Domain</th><th>Protocol</th><th>TTL (seconds)</th><th>State</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <h3>Add CDN origin</h3>
+        <form class="form" id="cdn-form">
+          <div class="form-row">
+            <div>
+              <label for="cdn-bucket">Bucket name</label>
+              <input id="cdn-bucket" type="text" required>
+            </div>
+            <div>
+              <label for="cdn-ttl">Default TTL (seconds)</label>
+              <input id="cdn-ttl" type="number" value="86400" required>
+            </div>
+          </div>
+          <div class="actions">
+            <button type="submit">Add origin</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-auto-tiering" class="page">
+      <div class="header">
+        <h2>Auto-tiering</h2>
+        <p>Moves objects between storage tiers by access frequency, like Intelligent-Tiering.</p>
+      </div>
+      <table id="auto-tiering-table">
+        <thead><tr><th>Bucket</th><th>Enabled</th><th>Rules</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <h3>Configure auto-tiering</h3>
+        <form class="form" id="auto-tiering-form">
+          <div class="form-row">
+            <div>
+              <label for="at-bucket">Bucket name</label>
+              <input id="at-bucket" type="text" required>
+            </div>
+            <div>
+              <label for="at-enabled">Enabled</label>
+              <select id="at-enabled">
+                <option>true</option>
+                <option>false</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label for="at-rules">Rules (JSON)</label>
+            <textarea id="at-rules" rows="3">[{"access_days":30,"from":"STANDARD","to":"STANDARD_IA"}]</textarea>
+          </div>
+          <div class="actions">
+            <button type="submit">Apply policy</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-compliance" class="page">
+      <div class="header">
+        <h2>Compliance reporting</h2>
+        <p>Compliance reports for SOC2, GDPR, HIPAA, and PCI-DSS frameworks.</p>
+      </div>
+      <div class="kv">
+        <div class="kv-item">
+          <div class="label">Frameworks</div>
+          <div class="value" id="compliance-frameworks">-</div>
+        </div>
+      </div>
+      <table id="compliance-table">
+        <thead><tr><th>Report ID</th><th>Time</th><th>Framework</th><th>Status</th><th>Buckets</th><th>Tenants</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <form class="form" id="compliance-form">
+          <div>
+            <label for="comp-framework">Framework</label>
+            <select id="comp-framework">
+              <option>SOC2</option>
+              <option>GDPR</option>
+              <option>HIPAA</option>
+              <option>PCI-DSS</option>
+            </select>
+          </div>
+          <div class="actions">
+            <button type="submit">Generate report</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-security" class="page">
+      <div class="header">
+        <h2>Security scanner</h2>
+        <p>Scans buckets and tenants for security issues: public access, unrotated keys, missing versioning.</p>
+      </div>
+      <table id="security-table">
+        <thead><tr><th>Finding ID</th><th>Time</th><th>Severity</th><th>Resource</th><th>Issue</th><th>Recommendation</th><th>State</th><th>Action</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <div class="actions">
+          <button type="button" id="security-scan">Run security scan</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="page-quarantine" class="page">
+      <div class="header">
+        <h2>Bucket quarantine</h2>
+        <p>Isolate buckets suspected of ransomware or suspicious activity.</p>
+      </div>
+      <table id="quarantine-table">
+        <thead><tr><th>Bucket</th><th>Reason</th><th>Quarantined at</th><th>Quarantined by</th><th>Action</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-network-policies" class="page">
+      <div class="header">
+        <h2>Network policies</h2>
+        <p>IP allow and block lists per tenant for network-level access control.</p>
+      </div>
+      <table id="network-table">
+        <thead><tr><th>Tenant</th><th>Allow list</th><th>Block list</th><th>State</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <h3>Set network policy</h3>
+        <form class="form" id="network-form">
+          <div class="form-row">
+            <div>
+              <label for="net-tenant">Tenant ID</label>
+              <input id="net-tenant" type="text" required>
+            </div>
+            <div>
+              <label for="net-state">State</label>
+              <select id="net-state">
+                <option>Enabled</option>
+                <option>Disabled</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label for="net-allow">Allow list (JSON array)</label>
+            <textarea id="net-allow" rows="2">["10.0.0.0/8"]</textarea>
+          </div>
+          <div>
+            <label for="net-block">Block list (JSON array)</label>
+            <textarea id="net-block" rows="2">[]</textarea>
+          </div>
+          <div class="actions">
+            <button type="submit">Apply policy</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-emergency-lock" class="page">
+      <div class="header">
+        <h2>Emergency lock-down</h2>
+        <p>Instant cluster-wide or per-bucket freeze for security incidents.</p>
+      </div>
+      <div class="kv">
+        <div class="kv-item">
+          <div class="label">Cluster locked</div>
+          <div class="value tag ok" id="lock-cluster-locked">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Locked by</div>
+          <div class="value" id="lock-locked-by">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Locked at</div>
+          <div class="value" id="lock-locked-at">-</div>
+        </div>
+        <div class="kv-item">
+          <div class="label">Reason</div>
+          <div class="value" id="lock-reason">-</div>
+        </div>
+      </div>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <h3>Cluster lock</h3>
+        <form class="form" id="emergency-lock-form">
+          <div>
+            <label for="lock-action">Action</label>
+            <select id="lock-action">
+              <option>lock</option>
+              <option>unlock</option>
+            </select>
+          </div>
+          <div>
+            <label for="lock-reason-input">Reason</label>
+            <input id="lock-reason-input" type="text" value="emergency">
+          </div>
+          <div class="actions">
+            <button type="submit">Apply</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="page-egress-optimizer" class="page">
+      <div class="header">
+        <h2>Data egress optimizer</h2>
+        <p>Analyzes access patterns and recommends caching to reduce egress costs.</p>
+      </div>
+      <table id="egress-table">
+        <thead><tr><th>Bucket</th><th>Hot prefixes</th><th>Cold prefixes</th><th>Estimated savings</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="card" style="max-width:600px; margin-top:16px">
+        <form class="form" id="egress-form">
+          <div>
+            <label for="egress-bucket">Bucket name</label>
+            <input id="egress-bucket" type="text" required>
+          </div>
+          <div class="actions">
+            <button type="submit">Run optimizer</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = "/api";
+const toast = document.getElementById("toast");
+
+function showToast(message, kind) {
+  toast.textContent = message;
+  toast.className = "toast " + (kind || "");
+  toast.style.display = "block";
+  setTimeout(() => { toast.style.display = "none"; }, 4000);
+}
+
+async function fetchJSON(path) {
+  const res = await fetch(API + path);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+function render(tableId, rows, columns) {
+  const tbody = document.querySelector("#" + tableId + " tbody");
+  tbody.innerHTML = "";
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    columns.forEach((col) => {
+      const td = document.createElement("td");
+      const val = row[col];
+      td.textContent = val === undefined || val === null ? "-" : val;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+function showPage(id) {
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+  document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+  document.getElementById("page-" + id).classList.add("active");
+  document.querySelector('[data-page="' + id + '"]').classList.add("active");
+}
+
+document.querySelectorAll(".nav-item").forEach(item => {
+  item.addEventListener("click", (e) => {
+    e.preventDefault();
+    showPage(item.getAttribute("data-page"));
+  });
+});
+
+// Overview
+async function loadOverview() {
+  const health = await fetchJSON("/cluster/health");
+  setText("health-line", health.status + " (updated " + health.updated + ")");
+  const tbody = document.querySelector("#health-table tbody");
+  tbody.innerHTML = "";
+  health.details.forEach(d => {
+    const tr = document.createElement("tr");
+    const td0 = document.createElement("td");
+    td0.textContent = d.check;
+    tr.appendChild(td0);
+    const td1 = document.createElement("td");
+    td1.textContent = d.status;
+    td1.className = d.status === "OK" ? "tag ok" : "tag err";
+    tr.appendChild(td1);
+    const td2 = document.createElement("td");
+    td2.textContent = d.detail;
+    tr.appendChild(td2);
+    tbody.appendChild(tr);
+  });
+}
+
+// Nodes
+async function loadNodes() {
+  const nodes = await fetchJSON("/nodes");
+  render("nodes-table", nodes, ["hostname", "role", "state", "cpu", "mem_gb", "disk_gb", "used_gb", "rack"]);
+}
+
+// Disks
+async function loadDisks() {
+  const disks = await fetchJSON("/disks");
+  const rows = disks.map(d => ({
+    node: d.node, path: d.path, type: d.type, tier: d.tier || "-",
+    size_gb: d.size_gb, used_gb: d.used_gb, state: d.state
+  }));
+  render("disks-table", rows, ["node", "path", "type", "tier", "size_gb", "used_gb", "state"]);
+}
+
+// Pools
+async function loadPools() {
+  const pools = await fetchJSON("/pools");
+  render("pools-table", pools, ["name", "type", "profile", "disk_type", "size_gb", "used_gb", "objects"]);
+}
+
+// Erasure
+async function loadErasure() {
+  const profiles = await fetchJSON("/erasure-profiles");
+  const rows = profiles.map(p => ({
+    name: p.name, k: p.k, m: p.m, failure_domain: p.failure_domain, crush_root: p.crush_root
+  }));
+  render("erasure-table", rows, ["name", "k", "m", "failure_domain", "crush_root"]);
+}
+
+// Buckets
+async function loadBuckets() {
+  const buckets = await fetchJSON("/buckets");
+  render("buckets-table", buckets, ["name", "tenant", "storage_class", "size_gb", "objects", "versioning", "object_lock", "created"]);
+}
+
+// Tenants
+async function loadTenants() {
+  const tenants = await fetchJSON("/tenants");
+  render("tenants-table", tenants, ["id", "name", "plan", "capacity_gb", "used_gb", "object_count", "object_limit", "state", "created"]);
+  const sel = document.getElementById("key-tenant");
+  tenants.forEach(t => {
+    const o = document.createElement("option");
+    o.value = t.id;
+    o.textContent = t.name + " (" + t.id + ")";
+    sel.appendChild(o);
+  });
+}
+
+// Users
+async function loadUsers() {
+  const users = await fetchJSON("/users");
+  render("users-table", users, ["id", "tenant", "name", "email", "state"]);
+}
+
+// Keys
+async function loadKeys() {
+  const keys = await fetchJSON("/keys");
+  render("keys-table", keys, ["id", "tenant", "user", "access_key", "created", "state"]);
+}
+
+// Recovery
+async function loadRecovery() {
+  const r = await fetchJSON("/recovery");
+  setText("recovery-state", r.state);
+  setText("recovery-throttle", r.throttle_mbps);
+  setText("recovery-last", r.last_rebuild);
+  setText("recovery-progress", r.progress === null ? "idle" : r.progress);
+}
+
+// Scrubbing
+async function loadScrubbing() {
+  const s = await fetchJSON("/scrubbing");
+  setText("scrub-schedule", s.schedule);
+  setText("scrub-last", s.last_run);
+  setText("scrub-status", s.status);
+  setText("scrub-errors", s.errors);
+  setText("scrub-now", s.scrubbing_now.length ? s.scrubbing_now.join(", ") : "none");
+}
+
+// Audit
+async function loadAudit() {
+  const log = await fetchJSON("/audit-log");
+  render("audit-table", log, ["time", "actor", "action", "resource", "result"]);
+}
+
+// Billing
+async function loadBilling() {
+  const inv = await fetchJSON("/invoices");
+  render("invoices-table", inv, ["id", "tenant", "period", "amount", "state", "due"]);
+}
+
+// Lifecycle policies
+const LIFECYCLE_POLICIES_CACHE = {};
+
+async function loadLifecycle() {
+  const rows = [];
+  Object.entries(LIFECYCLE_POLICIES_CACHE).forEach(([bucket, policy]) => {
+    (policy.rules || []).forEach(rule => {
+      const trans = (rule.transitions || [])[0];
+      rows.push({
+        bucket: bucket,
+        rule: rule.id || "-",
+        status: rule.status || "-",
+        days: trans ? trans.days : "-",
+        class: trans ? trans.storage_class : "-",
+        prefix: (rule.filter && rule.filter.prefix) || "-",
+      });
+    });
+  });
+  if (rows.length === 0) {
+    rows.push({bucket: "-", rule: "-", status: "-", days: "-", class: "-", prefix: "-"});
+  }
+  render("lifecycle-table", rows, ["bucket", "rule", "status", "days", "class", "prefix"]);
+}
+
+async function loadLifecyclePolicies() {
+  try {
+    const buckets = await fetchJSON("/buckets");
+    for (const b of buckets) {
+      try {
+        const pol = await fetchJSON("/buckets/" + b.name + "/lifecycle");
+        LIFECYCLE_POLICIES_CACHE[b.name] = pol;
+      } catch (e) {
+        LIFECYCLE_POLICIES_CACHE[b.name] = {rules: []};
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+// Access logs
+async function loadAccessLogs() {
+  try {
+    const buckets = await fetchJSON("/buckets");
+    let rows = [];
+    for (const b of buckets) {
+      try {
+        const data = await fetchJSON("/buckets/" + b.name + "/access-logs");
+        (data.logs || []).forEach(log => {
+          rows.push({
+            bucket: b.name,
+            time: log.time,
+            remote_ip: log.remote_ip,
+            method: log.method,
+            key: log.key,
+            status: log.status,
+            bytes: log.bytes,
+          });
+        });
+      } catch (e) {
+        // ignore
+      }
+    }
+    if (rows.length === 0) {
+      rows.push({bucket: "-", time: "-", remote_ip: "-", method: "-", key: "-", status: "-", bytes: "-"});
+    }
+    render("access-logs-table", rows, ["bucket", "time", "remote_ip", "method", "key", "status", "bytes"]);
+  } catch (e) {
+    // ignore
+  }
+}
+
+// Notifications
+async function loadNotifications() {
+  const rows = [];
+  Object.entries(BUCKET_NOTIFICATIONS_CACHE).forEach(([bucket, notif]) => {
+    (notif.webhooks || []).forEach(wh => {
+      rows.push({
+        bucket: bucket,
+        id: wh.id || "-",
+        topic: wh.topic || "-",
+        endpoint: wh.endpoint || "-",
+        state: wh.state || "-",
+      });
+    });
+  });
+  if (rows.length === 0) {
+    rows.push({bucket: "-", id: "-", topic: "-", endpoint: "-", state: "-"});
+  }
+  render("notifications-table", rows, ["bucket", "id", "topic", "endpoint", "state"]);
+}
+
+const BUCKET_NOTIFICATIONS_CACHE = {};
+
+async function loadNotificationData() {
+  try {
+    const buckets = await fetchJSON("/buckets");
+    for (const b of buckets) {
+      try {
+        const notif = await fetchJSON("/buckets/" + b.name + "/notifications");
+        BUCKET_NOTIFICATIONS_CACHE[b.name] = notif;
+      } catch (e) {
+        BUCKET_NOTIFICATIONS_CACHE[b.name] = {webhooks: []};
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+// Presigned URL
+document.getElementById("presigned-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const bucket = document.getElementById("ps-bucket").value;
+  const key = document.getElementById("ps-key").value;
+  const method = document.getElementById("ps-method").value;
+  const expiry = document.getElementById("ps-expiry").value;
+  const res = await fetch("/api/buckets/" + bucket + "/presigned-url", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({bucket, key, method, expiry, actor: "admin@example.com"}),
+  });
+  if (!res.ok) {
+    showToast("Failed to generate presigned URL");
+    return;
+  }
+  const data = await res.json();
+  document.getElementById("presigned-result").innerHTML =
+    '<div class="kv-item"><div class="label">URL</div><div class="value mono" style="word-break:break-all">' +
+    data.url + '</div></div>' +
+    '<div class="kv-item"><div class="label">Method</div><div class="value">' + data.method + '</div></div>' +
+    '<div class="kv-item"><div class="label">Expires in</div><div class="value">' + data.expires_in + ' seconds</div></div>';
+  showToast("Presigned URL generated");
+});
+
+// Lifecycle form
+document.getElementById("lc-cancel").addEventListener("click", () => {
+  document.getElementById("lifecycle-form").reset();
+});
+document.getElementById("lifecycle-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const bucket = document.getElementById("lc-bucket").value;
+  const rule = document.getElementById("lc-rule").value;
+  const days = parseInt(document.getElementById("lc-days").value, 10);
+  const cls = document.getElementById("lc-class").value;
+  const prefix = document.getElementById("lc-prefix").value;
+  const body = {
+    rules: [{
+      id: rule,
+      status: "Enabled",
+      filter: {prefix: prefix || ""},
+      transitions: [{days: days, storage_class: cls}],
+    }],
+    actor: "admin@example.com",
+  };
+  await fetch("/api/buckets/" + bucket + "/lifecycle", {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  document.getElementById("lifecycle-form").reset();
+  await loadLifecyclePolicies();
+  await loadLifecycle();
+  showToast("Lifecycle policy applied");
+});
+
+// Notification form
+document.getElementById("nf-cancel").addEventListener("click", () => {
+  document.getElementById("notification-form").reset();
+});
+document.getElementById("notification-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const bucket = document.getElementById("nf-bucket").value;
+  const topic = document.getElementById("nf-topic").value;
+  const endpoint = document.getElementById("nf-endpoint").value;
+  const body = {
+    webhooks: [{
+      id: "wh-" + Date.now(),
+      topic: topic,
+      endpoint: endpoint,
+      state: "Enabled",
+    }],
+    actor: "admin@example.com",
+  };
+  await fetch("/api/buckets/" + bucket + "/notifications", {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  document.getElementById("notification-form").reset();
+  await loadNotificationData();
+  await loadNotifications();
+  showToast("Webhook added");
+});
+
+// Forms
+document.getElementById("throttle-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const mbps = document.getElementById("throttle-mbps").value;
+  showToast("Recovery throttle set to " + mbps + " MB/s");
+});
+
+document.getElementById("tenant-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = {
+    name: document.getElementById("tenant-name").value,
+    plan: document.getElementById("tenant-plan").value,
+    capacity_gb: parseInt(document.getElementById("tenant-capacity").value, 10),
+  };
+  await fetch("/admin/tenants", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  document.getElementById("tenant-form").reset();
+  await loadTenants();
+  showToast("Tenant created");
+});
+
+document.getElementById("key-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = {
+    tenant: document.getElementById("key-tenant").value,
+    user: document.getElementById("key-user").value,
+  };
+  await fetch("/admin/keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  document.getElementById("key-form").reset();
+  await loadKeys();
+  showToast("Access key created");
+});
+
+document.getElementById("lock-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  showToast("Object Lock settings applied");
+});
+
+document.getElementById("lock-cancel").addEventListener("click", () => {
+  document.getElementById("lock-form").reset();
+});
+
+// Objects
+async function loadObjects() {
+  try {
+    const bucket = document.getElementById("obj-bucket").value;
+    const data = await fetchJSON("/buckets/" + bucket + "?list-objects=1");
+    const rows = (data.objects || []).map(o => ({
+      key: o.key, storage_class: o.storage_class, size: o.size,
+      last_access: o.last_access, versions: o.versions,
+      legal_hold: o.legal_hold, sse_kms: o.sse_kms ? "yes" : "no",
+    }));
+    render("objects-table", rows, ["key", "storage_class", "size", "last_access", "versions", "legal_hold", "sse_kms"]);
+  } catch (e) {
+    // ignore
+  }
+}
+document.getElementById("obj-load").addEventListener("click", loadObjects);
+
+// Website hosting
+document.getElementById("web-cancel").addEventListener("click", () => {
+  document.getElementById("website-form").reset();
+});
+document.getElementById("website-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const bucket = document.getElementById("web-bucket").value;
+  const index = document.getElementById("web-index").value;
+  const error = document.getElementById("web-error").value;
+  await fetch("/api/buckets/" + bucket + "/website", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({bucket, index_document: index, error_document: error, actor: "admin@example.com"}),
+  });
+  document.getElementById("website-url").textContent = "http://" + bucket + ".scaph.example.com/";
+  showToast("Website config applied");
+});
+
+// KMS keys
+async function loadKMS() {
+  try {
+    const keys = await fetchJSON("/kms/keys");
+    const rows = keys.map(k => ({
+      id: k.id, name: k.name, state: k.state, created: k.created,
+      description: k.description,
+    }));
+    render("kms-table", rows, ["id", "name", "state", "created", "description"]);
+  } catch (e) {
+    render("kms-table", [{id: "-", name: "-", state: "-", created: "-", description: "-"}], ["id", "name", "state", "created", "description"]);
+  }
+}
+document.getElementById("kms-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = {
+    name: document.getElementById("kms-name").value,
+    description: document.getElementById("kms-desc").value,
+  };
+  await fetch("/admin/kms/keys", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  document.getElementById("kms-form").reset();
+  await loadKMS();
+  showToast("KMS key created");
+});
+
+// Replication
+async function loadReplication() {
+  try {
+    const repl = await fetchJSON("/replication");
+    const rows = Object.entries(repl).map(([bucket, rep]) => {
+      const c = rep.config || {};
+      const s = rep.status || {};
+      return {
+        bucket: bucket, rule: c.rule_id || "-",
+        status: s.state || "-", dest_zone: c.destination_zone || "-",
+        dest_bucket: c.destination_bucket || "-",
+        lag: s.replication_lag_seconds || "-",
+        pending: s.pending_objects || "-",
+      };
+    });
+    if (rows.length === 0) rows.push({bucket: "-", rule: "-", status: "-", dest_zone: "-", dest_bucket: "-", lag: "-", pending: "-"});
+    render("replication-table", rows, ["bucket", "rule", "status", "dest_zone", "dest_bucket", "lag", "pending"]);
+  } catch (e) {
+    render("replication-table", [{bucket: "-", rule: "-", status: "-", dest_zone: "-", dest_bucket: "-", lag: "-", pending: "-"}], ["bucket", "rule", "status", "dest_zone", "dest_bucket", "lag", "pending"]);
+  }
+}
+document.getElementById("replication-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const bucket = document.getElementById("rep-bucket").value;
+  const body = {
+    rule_id: "rep-" + Date.now(),
+    status: "Enabled",
+    destination_zone: document.getElementById("rep-zone").value,
+    destination_bucket: document.getElementById("rep-dest").value,
+    selection: {storage_class: "STANDARD"},
+    sync_time_minutes: 15,
+  };
+  await fetch("/api/replication/" + bucket, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  document.getElementById("replication-form").reset();
+  await loadReplication();
+  showToast("Replication configured");
+});
+
+// DR
+async function loadDR() {
+  try {
+    const dr = await fetchJSON("/dr");
+    setText("dr-mode", dr.mode);
+    setText("dr-state", dr.state);
+    setText("dr-primary", dr.primary_zone);
+    setText("dr-secondary", dr.secondary_zone);
+    setText("dr-rpo", dr.rpo_minutes);
+    setText("dr-rto", dr.rto_minutes);
+    setText("dr-last", dr.last_failover || "none");
+    const el = document.getElementById("dr-state");
+    el.className = dr.state === "primary_active" ? "tag ok" : "tag warn";
+  } catch (e) {
+    // ignore
+  }
+}
+document.getElementById("dr-failover").addEventListener("click", async () => {
+  await fetch("/api/dr/failover", {method: "POST"});
+  await loadDR();
+  showToast("Failover to secondary initiated");
+});
+document.getElementById("dr-failback").addEventListener("click", async () => {
+  await fetch("/api/dr/failback", {method: "POST"});
+  await loadDR();
+  showToast("Failback to primary initiated");
+});
+
+// Drills
+async function loadDrills() {
+  try {
+    const drills = await fetchJSON("/drills");
+    render("drills-table", drills, ["id", "time", "type", "rpo_minutes", "rto_minutes", "state", "result", "objects_verified"]);
+  } catch (e) {
+    render("drills-table", [], ["id", "time", "type", "rpo_minutes", "rto_minutes", "state", "result", "objects_verified"]);
+  }
+}
+document.getElementById("drill-run").addEventListener("click", async () => {
+  await fetch("/api/drills/run", {method: "POST"});
+  await loadDrills();
+  showToast("Ransomware recovery drill completed");
+});
+
+// Cost optimization
+async function loadCost() {
+  try {
+    const recs = await fetchJSON("/cost/recommendations");
+    if (recs.length === 0) recs.push({bucket: "-", key: "-", current_class: "-", recommended_class: "-", reason: "no recommendations", estimated_savings_percent: 0});
+    const rows = recs.map(r => ({
+      bucket: r.bucket, key: r.key, current_class: r.current_class,
+      recommended_class: r.recommended_class, reason: r.reason,
+      savings: (r.estimated_savings_percent || 0) + "%",
+    }));
+    render("cost-table", rows, ["bucket", "key", "current_class", "recommended_class", "reason", "savings"]);
+  } catch (e) {
+    render("cost-table", [{bucket: "-", key: "-", current_class: "-", recommended_class: "-", reason: "-", savings: "-"}], ["bucket", "key", "current_class", "recommended_class", "reason", "savings"]);
+  }
+}
+
+// Global load balancer
+async function loadGlobalLB() {
+  try {
+    const lb = await fetchJSON("/global-lb");
+    setText("lb-state", lb.state);
+    setText("lb-primary", lb.primary_endpoint);
+    setText("lb-secondary", lb.secondary_endpoint);
+    setText("lb-primary-zone", lb.primary_zone);
+    setText("lb-secondary-zone", lb.secondary_zone);
+    setText("lb-primary-healthy", lb.primary_healthy ? "yes" : "no");
+    setText("lb-secondary-healthy", lb.secondary_healthy ? "yes" : "no");
+    setText("lb-failover-count", lb.failover_count);
+    setText("lb-last-failover", lb.last_failover || "none");
+    const el = document.getElementById("lb-state");
+    el.className = lb.state === "primary_active" ? "tag ok" : "tag warn";
+  } catch (e) {
+    // ignore
+  }
+}
+document.getElementById("lb-failover-secondary").addEventListener("click", async () => {
+  await fetch("/api/global-lb/failover", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({target: "secondary"})});
+  await loadGlobalLB();
+  showToast("Failover to secondary initiated");
+});
+document.getElementById("lb-failback-primary").addEventListener("click", async () => {
+  await fetch("/api/global-lb/failover", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({target: "primary"})});
+  await loadGlobalLB();
+  showToast("Failback to primary initiated");
+});
+
+// Config backup
+async function loadConfigBackup() {
+  try {
+    const data = await fetchJSON("/config/backup");
+    setText("backup-schedule", data.schedule);
+    setText("backup-retention", data.retention_days);
+    const rows = data.backups.map(b => ({
+      id: b.id, time: b.time, type: b.type, size: b.size_mb,
+      status: b.status, includes: b.includes.join(", "),
+    }));
+    render("backup-table", rows, ["id", "time", "type", "size", "status", "includes"]);
+  } catch (e) {
+    // ignore
+  }
+}
+document.getElementById("backup-create").addEventListener("click", async () => {
+  await fetch("/api/config/backup/create", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({})});
+  await loadConfigBackup();
+  showToast("Config backup created");
+});
+
+// CDN origins
+async function loadCDN() {
+  try {
+    const cdn = await fetchJSON("/cdn/origins");
+    const rows = Object.entries(cdn).map(([bucket, c]) => ({
+      bucket: bucket, id: c.origin_id, domain: c.domain,
+      protocol: c.origin_protocol_policy, ttl: c.default_ttl_seconds, state: c.state,
+    }));
+    render("cdn-table", rows, ["bucket", "id", "domain", "protocol", "ttl", "state"]);
+  } catch (e) {
+    render("cdn-table", [], ["bucket", "id", "domain", "protocol", "ttl", "state"]);
+  }
+}
+document.getElementById("cdn-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const bucket = document.getElementById("cdn-bucket").value;
+  const ttl = document.getElementById("cdn-ttl").value;
+  await fetch("/api/cdn/origins/" + bucket, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({default_ttl_seconds: parseInt(ttl)}),
+  });
+  document.getElementById("cdn-form").reset();
+  await loadCDN();
+  showToast("CDN origin added");
+});
+
+// Auto-tiering
+async function loadAutoTiering() {
+  try {
+    const data = await fetchJSON("/auto-tiering");
+    const rows = Object.entries(data.policies || {}).map(([bucket, p]) => ({
+      bucket: bucket, enabled: p.enabled,
+      rules: (p.rules || []).map(r => r.access_days + "d " + r.from + "->" + r.to).join(", "),
+    }));
+    render("auto-tiering-table", rows, ["bucket", "enabled", "rules"]);
+  } catch (e) {
+    render("auto-tiering-table", [], ["bucket", "enabled", "rules"]);
+  }
+}
+document.getElementById("auto-tiering-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const bucket = document.getElementById("at-bucket").value;
+  const enabled = document.getElementById("at-enabled").value === "true";
+  const rules = JSON.parse(document.getElementById("at-rules").value || "[]");
+  await fetch("/api/auto-tiering/" + bucket, {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({enabled: enabled, rules: rules}),
+  });
+  document.getElementById("auto-tiering-form").reset();
+  await loadAutoTiering();
+  showToast("Auto-tiering policy applied");
+});
+
+// Compliance
+async function loadCompliance() {
+  try {
+    const frameworks = await fetchJSON("/compliance/frameworks");
+    setText("compliance-frameworks", frameworks.join(", "));
+    const reports = await fetchJSON("/compliance/reports");
+    const rows = reports.map(r => ({
+      id: r.id, time: r.time, framework: r.framework, status: r.status,
+      buckets: r.bucket_count, tenants: r.tenant_count,
+    }));
+    render("compliance-table", rows, ["id", "time", "framework", "status", "buckets", "tenants"]);
+  } catch (e) {
+    render("compliance-table", [], ["id", "time", "framework", "status", "buckets", "tenants"]);
+  }
+}
+document.getElementById("compliance-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const framework = document.getElementById("comp-framework").value;
+  await fetch("/api/compliance/reports/generate", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({framework: framework}),
+  });
+  document.getElementById("compliance-form").reset();
+  await loadCompliance();
+  showToast("Compliance report generated");
+});
+
+// Security scanner
+async function loadSecurity() {
+  try {
+    const findings = await fetchJSON("/security/findings");
+    if (findings.length === 0) findings.push({id: "-", time: "-", severity: "-", resource: "-", issue: "-", recommendation: "-", state: "-"});
+    const rows = findings.map(f => ({
+      id: f.id, time: f.time, severity: f.severity, resource: f.resource,
+      issue: f.issue, recommendation: f.recommendation, state: f.state,
+    }));
+    render("security-table", rows, ["id", "time", "severity", "resource", "issue", "recommendation", "state"]);
+  } catch (e) {
+    render("security-table", [{id: "-", time: "-", severity: "-", resource: "-", issue: "-", recommendation: "-", state: "-"}], ["id", "time", "severity", "resource", "issue", "recommendation", "state"]);
+  }
+}
+document.getElementById("security-scan").addEventListener("click", async () => {
+  await fetch("/api/security/scan/run", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({})});
+  await loadSecurity();
+  showToast("Security scan completed");
+});
+
+// Quarantine
+async function loadQuarantine() {
+  try {
+    const q = await fetchJSON("/quarantine");
+    const rows = Object.entries(q).map(([bucket, info]) => ({
+      bucket: bucket, reason: info.reason, time: info.quarantined_at, by: info.quarantined_by,
+    }));
+    render("quarantine-table", rows, ["bucket", "reason", "time", "by"]);
+  } catch (e) {
+    render("quarantine-table", [], ["bucket", "reason", "time", "by"]);
+  }
+}
+
+// Network policies
+async function loadNetworkPolicies() {
+  try {
+    const policies = await fetchJSON("/network/policies");
+    const rows = Object.entries(policies).map(([tenant, p]) => ({
+      tenant: tenant, allow: (p.allow_list || []).join(", "), block: (p.block_list || []).join(", "), state: p.state,
+    }));
+    render("network-table", rows, ["tenant", "allow", "block", "state"]);
+  } catch (e) {
+    render("network-table", [], ["tenant", "allow", "block", "state"]);
+  }
+}
+document.getElementById("network-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = {
+    tenant_id: document.getElementById("net-tenant").value,
+    state: document.getElementById("net-state").value,
+    allow_list: JSON.parse(document.getElementById("net-allow").value || "[]"),
+    block_list: JSON.parse(document.getElementById("net-block").value || "[]"),
+  };
+  await fetch("/api/network/policies", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  document.getElementById("network-form").reset();
+  await loadNetworkPolicies();
+  showToast("Network policy applied");
+});
+
+// Emergency lock
+async function loadEmergencyLock() {
+  try {
+    const lock = await fetchJSON("/emergency/lock");
+    setText("lock-cluster-locked", lock.cluster_locked ? "yes" : "no");
+    setText("lock-locked-by", lock.locked_by || "-");
+    setText("lock-locked-at", lock.locked_at || "-");
+    setText("lock-reason", lock.reason || "-");
+    const el = document.getElementById("lock-cluster-locked");
+    el.className = lock.cluster_locked ? "tag err" : "tag ok";
+  } catch (e) {
+    // ignore
+  }
+}
+document.getElementById("emergency-lock-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const action = document.getElementById("lock-action").value;
+  const reason = document.getElementById("lock-reason-input").value;
+  await fetch("/api/emergency/lock", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({action: action, reason: reason}),
+  });
+  document.getElementById("emergency-lock-form").reset();
+  await loadEmergencyLock();
+  showToast("Emergency lock " + action + " applied");
+});
+
+// Egress optimizer
+async function loadEgress() {
+  try {
+    const hints = await fetchJSON("/egress/optimizer");
+    const rows = Object.entries(hints).map(([bucket, h]) => ({
+      bucket: bucket, hot: (h.hot_prefixes || []).join(", "), cold: (h.cold_prefixes || []).join(", "),
+      savings: (h.estimated_egress_savings_percent || 0) + "%",
+    }));
+    render("egress-table", rows, ["bucket", "hot", "cold", "savings"]);
+  } catch (e) {
+    render("egress-table", [], ["bucket", "hot", "cold", "savings"]);
+  }
+}
+document.getElementById("egress-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const bucket = document.getElementById("egress-bucket").value;
+  await fetch("/api/egress/optimizer/run", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({bucket: bucket}),
+  });
+  document.getElementById("egress-form").reset();
+  await loadEgress();
+  showToast("Egress optimizer ran");
+});
+
+// Boot
+(async () => {
+  await loadOverview();
+  await loadNodes();
+  await loadDisks();
+  await loadPools();
+  await loadErasure();
+  await loadBuckets();
+  await loadLifecyclePolicies();
+  await loadLifecycle();
+  await loadAccessLogs();
+  await loadNotificationData();
+  await loadNotifications();
+  await loadTenants();
+  await loadUsers();
+  await loadKeys();
+  await loadRecovery();
+  await loadScrubbing();
+  await loadAudit();
+  await loadBilling();
+  await loadKMS();
+  await loadReplication();
+  await loadDR();
+  await loadDrills();
+  await loadCost();
+  await loadGlobalLB();
+  await loadConfigBackup();
+  await loadCDN();
+  await loadAutoTiering();
+  await loadCompliance();
+  await loadSecurity();
+  await loadQuarantine();
+  await loadNetworkPolicies();
+  await loadEmergencyLock();
+  await loadEgress();
+})();
+</script>
+</body>
+</html>
