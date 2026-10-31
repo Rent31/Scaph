@@ -1875,6 +1875,21 @@ class Handler(BaseHTTPRequestHandler):
                                        "object_limit": tenant_obj["object_limit"]})
                 return
 
+        # Network policies
+        if path == "/api/network/policies":
+            tenant_id = payload.get("tenant_id")
+            if not tenant_id:
+                self._send_json(400, {"error": "tenant_id required"})
+                return
+            NETWORK_POLICIES[tenant_id] = {
+                "allow_list": payload.get("allow_list", []),
+                "block_list": payload.get("block_list", []),
+                "state": payload.get("state", "Enabled"),
+            }
+            _audit(actor, "network.policy.put", tenant_id)
+            self._send_json(200, {"status": "ok"})
+            return
+
         # Global LB config
         if path == "/api/global-lb":
             GLOBAL_LB["primary_endpoint"] = payload.get(
